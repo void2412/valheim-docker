@@ -98,7 +98,7 @@ ValheimModStub/obj/
 .gradle/
 .env
 .env.local
-valheim-ctl*
+valheimctl*
 secrets/
 *.key
 *.pem
