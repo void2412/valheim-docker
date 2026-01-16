@@ -53,6 +53,17 @@ remove_bepinex() {
             fi
         fi
 
+        # Backup config before removal
+        if [[ -d "$VALHEIM_DIR/BepInEx/config" ]]; then
+            local config_count
+            config_count=$(find "$VALHEIM_DIR/BepInEx/config" -name "*.cfg" -type f 2>/dev/null | wc -l)
+            if [[ $config_count -gt 0 ]]; then
+                log "Backing up $config_count config files to /tmp/bepinex-config-backup..."
+                rm -rf /tmp/bepinex-config-backup
+                cp -r "$VALHEIM_DIR/BepInEx/config" /tmp/bepinex-config-backup
+            fi
+        fi
+
         rm -rf "$VALHEIM_DIR/BepInEx"
         log "Removed BepInEx directory"
     fi
@@ -153,8 +164,9 @@ install_bepinex() {
     return 0
 }
 
-# Restore plugins from backup (always called, regardless of install success)
-restore_plugins_backup() {
+# Restore plugins and config from backup (always called, regardless of install success)
+restore_backup() {
+    # Restore plugins
     if [[ -d /tmp/bepinex-plugins-backup ]]; then
         log "Restoring plugins from backup..."
         mkdir -p "$VALHEIM_DIR/BepInEx/plugins"
@@ -165,6 +177,19 @@ restore_plugins_backup() {
         local restored_count
         restored_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
         log "Restored $restored_count plugins"
+    fi
+
+    # Restore config
+    if [[ -d /tmp/bepinex-config-backup ]]; then
+        log "Restoring config from backup..."
+        mkdir -p "$VALHEIM_DIR/BepInEx/config"
+        cp -r /tmp/bepinex-config-backup/* "$VALHEIM_DIR/BepInEx/config/" 2>/dev/null || true
+        chown -R valheim:valheim "$VALHEIM_DIR/BepInEx/config"
+        rm -rf /tmp/bepinex-config-backup
+
+        local restored_count
+        restored_count=$(find "$VALHEIM_DIR/BepInEx/config" -name "*.cfg" -type f 2>/dev/null | wc -l)
+        log "Restored $restored_count config files"
     fi
 }
 
@@ -198,8 +223,8 @@ main() {
         install_success=false
     fi
 
-    # ALWAYS restore plugins backup (even if install failed)
-    restore_plugins_backup
+    # ALWAYS restore backup (even if install failed)
+    restore_backup
 
     if [[ "$install_success" == "true" ]]; then
         log "BepInEx update complete"
