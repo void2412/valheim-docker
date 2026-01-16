@@ -217,11 +217,11 @@ install_bepinex() {
     fi
 }
 
-# Start server after update
-start_server_after_update() {
-    log "Starting server after update..."
-    supervisorctl start valheim-server
-    log "Server start command sent"
+# Schedule server start after script exits (background job survives script exit)
+schedule_server_start() {
+    log "Scheduling server start in 2 seconds..."
+    (sleep 2 && supervisorctl start valheim-server) &
+    disown
 }
 
 # Main
@@ -235,7 +235,7 @@ main() {
     if ! run_update; then
         log_error "Update failed!"
         log "Attempting to restart server despite update failure..."
-        start_server_after_update
+        schedule_server_start
         exit 1
     fi
 
@@ -243,17 +243,18 @@ main() {
     if ! verify_installation; then
         log_error "Installation verification failed!"
         log "Attempting to restart server despite verification failure..."
-        start_server_after_update
+        schedule_server_start
         exit 1
     fi
 
     # Reinstall BepInEx if needed (steamcmd may have removed it)
     install_bepinex
 
-    log "Update complete, starting server..."
-    start_server_after_update
-
     log "=== Valheim Server Updater Finished ==="
+
+    # Schedule server start after this script exits
+    schedule_server_start
+    exit 0
 }
 
 main "$@"

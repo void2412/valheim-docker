@@ -168,11 +168,11 @@ restore_plugins_backup() {
     fi
 }
 
-# Start server after update
-start_server_after_update() {
-    log "Starting server after BepInEx update..."
-    supervisorctl start valheim-server
-    log "Server start command sent"
+# Schedule server start after script exits (background job survives script exit)
+schedule_server_start() {
+    log "Scheduling server start in 2 seconds..."
+    (sleep 2 && supervisorctl start valheim-server) &
+    disown
 }
 
 # Main
@@ -201,19 +201,20 @@ main() {
     # ALWAYS restore plugins backup (even if install failed)
     restore_plugins_backup
 
-    # Start server
     if [[ "$install_success" == "true" ]]; then
-        log "BepInEx update complete, starting server..."
+        log "BepInEx update complete"
     else
-        log "Attempting to restart server after failed BepInEx install..."
+        log_error "BepInEx update failed"
     fi
-    
 
-    
-    start_server_after_update
+    log "=== BepInEx Updater Finished ==="
 
-    if [[ "$install_success" != "true" ]]; then
-        log "=== BepInEx Updater Finished ==="
+    # Schedule server start after this script exits
+    if [[ "$install_success" == "true" ]]; then
+        schedule_server_start
+        exit 0
+    else
+        schedule_server_start
         exit 1
     fi
 }

@@ -200,11 +200,16 @@ print_config() {
     log "=============================="
 }
 
+schedule_server_start() {
+    log "Scheduling server start in 2 seconds..."
+    (sleep 2 && supervisorctl start valheim-server) &
+    disown
+}
+
 # Start valheim-server via supervisord
 start_server() {
-    log "Starting valheim-server..."
-    supervisorctl start valheim-server
     log "=== Valheim Init Complete ==="
+    schedule_server_start
 }
 
 # Main
@@ -215,6 +220,7 @@ main() {
     setup_cron
     print_config
     start_server
+    exit 0
 }
 
 main "$@"
