@@ -1,0 +1,257 @@
+#!/bin/bash
+# Remote Valheim server control via supervisord HTTP API
+# Usage: valheim-remote <host> <command> [options]
+
+set -e
+
+# Default values
+HOST="${VALHEIM_HOST:-localhost}"
+PORT="${VALHEIM_SUPERVISOR_PORT:-9001}"
+USER="${VALHEIM_SUPERVISOR_USER:-admin}"
+PASS="${VALHEIM_SUPERVISOR_PASS:-}"
+
+usage() {
+    cat << EOF
+Valheim Remote Control - Manage server via supervisord HTTP API
+
+Usage: $(basename "$0") [options] <command>
+
+Commands:
+    start       Start the Valheim server
+    stop        Stop the Valheim server
+    restart     Restart the Valheim server
+    status      Show server status
+    logs        Tail server logs (follow mode)
+
+Options:
+    -h, --host HOST     Supervisord host (default: localhost, or VALHEIM_HOST env)
+    -p, --port PORT     Supervisord port (default: 9001, or VALHEIM_SUPERVISOR_PORT env)
+    -u, --user USER     HTTP auth username (default: admin, or VALHEIM_SUPERVISOR_USER env)
+    -P, --pass PASS     HTTP auth password (or VALHEIM_SUPERVISOR_PASS env)
+    --help              Show this help
+
+Examples:
+    $(basename "$0") -h 192.168.1.100 -P secret restart
+    $(basename "$0") status
+    VALHEIM_HOST=myserver VALHEIM_SUPERVISOR_PASS=secret $(basename "$0") restart
+
+Environment variables:
+    VALHEIM_HOST              Supervisord host
+    VALHEIM_SUPERVISOR_PORT   Supervisord port
+    VALHEIM_SUPERVISOR_USER   HTTP auth username
+    VALHEIM_SUPERVISOR_PASS   HTTP auth password
+EOF
+    exit 0
+}
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h|--host)
+            HOST="$2"
+            shift 2
+            ;;
+        -p|--port)
+            PORT="$2"
+            shift 2
+            ;;
+        -u|--user)
+            USER="$2"
+            shift 2
+            ;;
+        -P|--pass)
+            PASS="$2"
+            shift 2
+            ;;
+        --help)
+            usage
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+        *)
+            COMMAND="$1"
+            shift
+            break
+            ;;
+    esac
+done
+
+if [[ -z "$COMMAND" ]]; then
+    echo "Error: No command specified" >&2
+    echo "Use --help for usage information" >&2
+    exit 1
+fi
+
+# Build auth string
+AUTH=""
+if [[ -n "$USER" && -n "$PASS" ]]; then
+    AUTH="-u ${USER}:${PASS}"
+fi
+
+BASE_URL="http://${HOST}:${PORT}"
+
+# XML-RPC helper
+xmlrpc_call() {
+    local method="$1"
+    local params="${2:-}"
+
+    local body="<?xml version='1.0'?>
+<methodCall>
+    <methodName>${method}</methodName>
+    <params>${params}</params>
+</methodCall>"
+
+    curl -s $AUTH \
+        -H "Content-Type: text/xml" \
+        -d "$body" \
+        "${BASE_URL}/RPC2"
+}
+
+# Parse XML-RPC response for simple string/int values
+parse_response() {
+    grep -oP '(?<=<string>|<int>|<boolean>)[^<]+' | head -1
+}
+
+# Get process state
+get_state() {
+    local response
+    response=$(xmlrpc_call "supervisor.getProcessInfo" "<param><value><string>valheim-server</string></value></param>")
+
+    # Extract statename
+    echo "$response" | grep -oP '(?<=<name>statename</name><value><string>)[^<]+' || echo "UNKNOWN"
+}
+
+# Commands
+cmd_start() {
+    echo "Starting Valheim server..."
+    local response
+    response=$(xmlrpc_call "supervisor.startProcess" "<param><value><string>valheim-server</string></value></param>")
+
+    if echo "$response" | grep -q "<boolean>1</boolean>"; then
+        echo "Server started successfully"
+    else
+        echo "Failed to start server"
+        echo "$response" | grep -oP '(?<=<string>)[^<]+' | head -1
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    echo "Stopping Valheim server..."
+    local response
+    response=$(xmlrpc_call "supervisor.stopProcess" "<param><value><string>valheim-server</string></value></param>")
+
+    if echo "$response" | grep -q "<boolean>1</boolean>"; then
+        echo "Server stopped successfully"
+    else
+        echo "Failed to stop server (may already be stopped)"
+    fi
+}
+
+cmd_restart() {
+    echo "Restarting Valheim server..."
+
+    # Stop first
+    xmlrpc_call "supervisor.stopProcess" "<param><value><string>valheim-server</string></value></param>" > /dev/null 2>&1 || true
+
+    # Wait a moment
+    sleep 2
+
+    # Start
+    local response
+    response=$(xmlrpc_call "supervisor.startProcess" "<param><value><string>valheim-server</string></value></param>")
+
+    if echo "$response" | grep -q "<boolean>1</boolean>"; then
+        echo "Server restarted successfully"
+    else
+        echo "Failed to restart server"
+        echo "$response" | grep -oP '(?<=<string>)[^<]+' | head -1
+        exit 1
+    fi
+}
+
+cmd_status() {
+    echo "=== Valheim Server Status ==="
+    echo ""
+
+    local response
+    response=$(xmlrpc_call "supervisor.getProcessInfo" "<param><value><string>valheim-server</string></value></param>")
+
+    # Parse key fields
+    local state name pid uptime
+    state=$(echo "$response" | grep -oP '(?<=<name>statename</name><value><string>)[^<]+' || echo "UNKNOWN")
+    pid=$(echo "$response" | grep -oP '(?<=<name>pid</name><value><int>)[^<]+' || echo "0")
+
+    echo "Process: valheim-server"
+    echo "State:   $state"
+    echo "PID:     $pid"
+
+    # Get all process info
+    echo ""
+    echo "=== All Processes ==="
+    response=$(xmlrpc_call "supervisor.getAllProcessInfo")
+
+    echo "$response" | grep -oP '(?<=<name>name</name><value><string>)[^<]+' | while read -r proc; do
+        local proc_state
+        proc_state=$(xmlrpc_call "supervisor.getProcessInfo" "<param><value><string>$proc</string></value></param>" | \
+            grep -oP '(?<=<name>statename</name><value><string>)[^<]+' || echo "?")
+        printf "  %-20s %s\n" "$proc" "$proc_state"
+    done
+}
+
+cmd_logs() {
+    echo "Tailing Valheim server logs (Ctrl+C to stop)..."
+    echo ""
+
+    local offset=0
+    local length=4096
+
+    while true; do
+        local response
+        response=$(xmlrpc_call "supervisor.tailProcessStdoutLog" \
+            "<param><value><string>valheim-server</string></value></param><param><value><int>$offset</int></value></param><param><value><int>$length</int></value></param>")
+
+        # Extract log content and new offset
+        local content new_offset overflow
+        content=$(echo "$response" | grep -oP '(?<=<value><string>)[^<]*' | head -1)
+        new_offset=$(echo "$response" | grep -oP '(?<=<value><int>)[^<]+' | head -1)
+        overflow=$(echo "$response" | grep -oP '(?<=<value><boolean>)[^<]+' | head -1)
+
+        if [[ -n "$content" ]]; then
+            # Decode XML entities
+            echo -e "$content" | sed 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g; s/&quot;/"/g'
+        fi
+
+        if [[ -n "$new_offset" && "$new_offset" != "$offset" ]]; then
+            offset="$new_offset"
+        fi
+
+        sleep 1
+    done
+}
+
+# Execute command
+case "$COMMAND" in
+    start)
+        cmd_start
+        ;;
+    stop)
+        cmd_stop
+        ;;
+    restart)
+        cmd_restart
+        ;;
+    status)
+        cmd_status
+        ;;
+    logs)
+        cmd_logs
+        ;;
+    *)
+        echo "Unknown command: $COMMAND" >&2
+        echo "Use --help for usage information" >&2
+        exit 1
+        ;;
+esac

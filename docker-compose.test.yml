@@ -1,0 +1,40 @@
+version: "3.8"
+
+# Test configuration for development/testing
+services:
+  valheim:
+    build: .
+    image: valheim-server:test
+    container_name: valheim-test
+    restart: "no"
+    stop_grace_period: 30s
+    ports:
+      - "2456:2456/udp"
+      - "2457:2457/udp"
+      - "9001:9001/tcp"
+    environment:
+      - SERVER_NAME=Test Server
+      - SERVER_PORT=2456
+      - WORLD_NAME=TestWorld
+      - SERVER_PASS=testpass
+      - SERVER_PUBLIC=0
+      - CROSSPLAY=false
+      - TZ=UTC
+      - BACKUPS=true
+      - BACKUPS_CRON=* * * * *
+      - BACKUPS_MAX_AGE=1
+      - BACKUPS_MAX_COUNT=5
+      - BACKUPS_IF_IDLE=false
+      - BACKUPS_ZIP=true
+      - BEPINEX=false
+      - SUPERVISOR_HTTP=true
+      - SUPERVISOR_HTTP_PORT=9001
+      - SUPERVISOR_HTTP_USER=admin
+      - SUPERVISOR_HTTP_PASS=test
+    volumes:
+      - valheim-config-test:/config
+      - valheim-backups-test:/backups
+
+volumes:
+  valheim-config-test:
+  valheim-backups-test:

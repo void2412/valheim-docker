@@ -1,0 +1,27 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+*.md
+docs/
+research/
+plans/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local testing
+docker-compose.test.yml
+test/
+
+# Claude
+.claude/
+CLAUDE.md
+
+# OS files
+.DS_Store
+Thumbs.db

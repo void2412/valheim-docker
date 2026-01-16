@@ -1,0 +1,148 @@
+#!/bin/bash
+# Valheim server updater script
+# Uses steamcmd to install/update game files
+
+set -e
+SCRIPT_NAME="updater"
+source /opt/valheim/scripts/common.sh
+
+# Check if update should proceed based on idle status
+check_idle_requirement() {
+    if [[ "$RESTART_IF_IDLE" != "true" ]]; then
+        return 0
+    fi
+
+    if ! is_server_running; then
+        return 0  # Server not running, safe to update
+    fi
+
+    if is_server_idle; then
+        return 0  # Server idle, safe to update
+    fi
+
+    log "Server not idle, skipping update (RESTART_IF_IDLE=true)"
+    return 1
+}
+
+# Get current build ID from manifest
+get_current_build() {
+    local manifest="$VALHEIM_DIR/steamapps/appmanifest_${VALHEIM_APP_ID}.acf"
+
+    if [[ -f "$manifest" ]]; then
+        grep -Po '"buildid"\s*"\K[^"]+' "$manifest" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Run steamcmd update
+run_update() {
+    log "Running steamcmd update..."
+    log "Install directory: $VALHEIM_DIR"
+
+    local current_build
+    current_build=$(get_current_build)
+    log "Current build ID: $current_build"
+
+    # Create install directory
+    mkdir -p "$VALHEIM_DIR"
+
+    # Run steamcmd and pipe output through logger
+    # Use set +e temporarily to capture exit code properly
+    # Note: force_install_dir must come before login
+    # Retry up to 3 times as steamcmd can fail on first attempts
+    local exit_code=1
+    local attempt=1
+    local max_attempts=3
+
+    set +e
+    while [[ $attempt -le $max_attempts && $exit_code -ne 0 ]]; do
+        log "steamcmd attempt $attempt of $max_attempts..."
+
+        $STEAMCMD \
+            +@sSteamCmdForcePlatformType linux \
+            +force_install_dir "$VALHEIM_DIR" \
+            +login anonymous \
+            +app_update $VALHEIM_APP_ID validate \
+            +quit 2>&1 | while IFS= read -r line; do
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-steamcmd] $line"
+                if [[ -S /dev/log ]]; then
+                    /usr/local/bin/logger -t "valheim-steamcmd" -p local0.info "$line" 2>/dev/null || true
+                fi
+            done
+        exit_code=${PIPESTATUS[0]}
+
+        if [[ $exit_code -ne 0 && $attempt -lt $max_attempts ]]; then
+            log_warn "steamcmd failed with exit code $exit_code, retrying in 5s..."
+            sleep 5
+        fi
+        ((attempt++))
+    done
+    set -e
+
+    if [[ $exit_code -ne 0 ]]; then
+        log_error "steamcmd failed with exit code: $exit_code after $max_attempts attempts"
+        return $exit_code
+    fi
+
+    local new_build
+    new_build=$(get_current_build)
+    log "New build ID: $new_build"
+
+    if [[ "$current_build" != "$new_build" ]]; then
+        log "Server updated from build $current_build to $new_build"
+    else
+        log "Server is up to date (build $new_build)"
+    fi
+
+    # Ensure executable permissions
+    chmod +x "$VALHEIM_DIR/valheim_server.x86_64" 2>/dev/null || true
+
+    return 0
+}
+
+# Verify installation
+verify_installation() {
+    log "Verifying installation..."
+
+    local required_files=(
+        "valheim_server.x86_64"
+        "valheim_server_Data/Managed/assembly_valheim.dll"
+    )
+
+    for file in "${required_files[@]}"; do
+        if [[ ! -f "$VALHEIM_DIR/$file" ]]; then
+            log_error "Missing required file: $file"
+            return 1
+        fi
+    done
+
+    log "Installation verified successfully"
+    return 0
+}
+
+# Main
+main() {
+    log "=== Valheim Server Updater ==="
+
+    # Check idle requirement if server is running
+    if ! check_idle_requirement; then
+        exit 0
+    fi
+
+    # Run update
+    if ! run_update; then
+        log_error "Update failed!"
+        exit 1
+    fi
+
+    # Verify installation
+    if ! verify_installation; then
+        log_error "Installation verification failed!"
+        exit 1
+    fi
+
+    log "Update complete"
+}
+
+main "$@"

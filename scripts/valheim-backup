@@ -1,0 +1,181 @@
+#!/bin/bash
+# Valheim world backup script
+# Creates compressed backups with rotation by age and count
+
+set -e
+SCRIPT_NAME="backup"
+source /opt/valheim/scripts/common.sh
+
+# Check if backups are enabled
+check_backup_enabled() {
+    if [[ "$BACKUPS" != "true" ]]; then
+        log "Backups disabled (BACKUPS=$BACKUPS)"
+        return 1
+    fi
+    return 0
+}
+
+# Check idle requirement
+check_idle_requirement() {
+    if [[ "$BACKUPS_IF_IDLE" != "true" ]]; then
+        return 0  # Backup regardless of idle status
+    fi
+
+    if is_server_idle; then
+        return 0
+    fi
+
+    log "Server not idle, skipping backup (BACKUPS_IF_IDLE=true)"
+    return 1
+}
+
+# Create world backup
+create_backup() {
+    local world_dir="$CONFIG_DIR/worlds_local"
+
+    # Check if world directory exists
+    if [[ ! -d "$world_dir" ]]; then
+        log_warn "World directory not found: $world_dir"
+        log_warn "Server may not have created a world yet"
+        return 1
+    fi
+
+    # Check if world files exist
+    if [[ ! -f "$world_dir/${WORLD_NAME}.db" ]]; then
+        log_warn "World file not found: ${WORLD_NAME}.db"
+        return 1
+    fi
+
+    # Create backup directory
+    mkdir -p "$BACKUP_DIR"
+
+    # Generate backup filename
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local backup_name="${WORLD_NAME}-${timestamp}"
+
+    # Create backup
+    if [[ "$BACKUPS_ZIP" == "true" ]]; then
+        local backup_file="$BACKUP_DIR/${backup_name}.tar.gz"
+        log "Creating compressed backup: ${backup_name}.tar.gz"
+        tar -czf "$backup_file" -C "$world_dir" .
+    else
+        local backup_file="$BACKUP_DIR/${backup_name}.tar"
+        log "Creating backup: ${backup_name}.tar"
+        tar -cf "$backup_file" -C "$world_dir" .
+    fi
+
+    # Also backup adminlist, bannedlist, permittedlist if they exist
+    for list_file in adminlist.txt bannedlist.txt permittedlist.txt; do
+        if [[ -f "$CONFIG_DIR/$list_file" ]]; then
+            cp "$CONFIG_DIR/$list_file" "$BACKUP_DIR/${WORLD_NAME}-${timestamp}-${list_file}"
+        fi
+    done
+
+    log "Backup created successfully: $backup_file"
+    return 0
+}
+
+# Backup ServerCharacters data if it exists
+backup_server_characters() {
+    local chars_dir="$CONFIG_DIR/servercharacters"
+
+    if [[ ! -d "$chars_dir" ]]; then
+        return 0  # No ServerCharacters data
+    fi
+
+    local fch_count
+    fch_count=$(find "$chars_dir" -name "*.fch" -type f 2>/dev/null | wc -l)
+
+    if [[ $fch_count -eq 0 ]]; then
+        return 0
+    fi
+
+    local timestamp
+    timestamp=$(date +%Y%m%d-%H%M%S)
+    local backup_file="$BACKUP_DIR/servercharacters-${timestamp}.tar.gz"
+
+    log "Backing up $fch_count ServerCharacters files..."
+    tar -czf "$backup_file" -C "$chars_dir" .
+    log "ServerCharacters backup: $backup_file"
+}
+
+# Remove old backups by age
+cleanup_by_age() {
+    if [[ "$BACKUPS_MAX_AGE" -le 0 ]]; then
+        return 0
+    fi
+
+    log "Removing backups older than $BACKUPS_MAX_AGE days..."
+
+    local count
+    count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$BACKUPS_MAX_AGE 2>/dev/null | wc -l)
+
+    if [[ $count -gt 0 ]]; then
+        find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$BACKUPS_MAX_AGE -delete
+        log "Removed $count old backups"
+    fi
+}
+
+# Remove old backups by count
+cleanup_by_count() {
+    if [[ "$BACKUPS_MAX_COUNT" -le 0 ]]; then
+        return 0  # 0 means unlimited
+    fi
+
+    local current_count
+    current_count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f 2>/dev/null | wc -l)
+
+    if [[ $current_count -le $BACKUPS_MAX_COUNT ]]; then
+        return 0
+    fi
+
+    local to_delete=$((current_count - BACKUPS_MAX_COUNT))
+    log "Removing $to_delete oldest backups (keeping $BACKUPS_MAX_COUNT)..."
+
+    # Delete oldest files first
+    find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f -printf '%T+ %p\n' 2>/dev/null \
+        | sort \
+        | head -n $to_delete \
+        | cut -d' ' -f2- \
+        | xargs -r rm -f
+
+    log "Backup rotation complete"
+}
+
+# Main
+main() {
+    log "=== Valheim Backup ==="
+    log "World: ${WORLD_NAME}"
+    log "Backup dir: ${BACKUP_DIR}"
+    log "Compression: ${BACKUPS_ZIP}"
+    log "Max age: ${BACKUPS_MAX_AGE} days"
+    log "Max count: ${BACKUPS_MAX_COUNT} (0=unlimited)"
+
+    # Check if backups enabled
+    if ! check_backup_enabled; then
+        exit 0
+    fi
+
+    # Check idle requirement
+    if ! check_idle_requirement; then
+        exit 0
+    fi
+
+    # Create backup
+    if ! create_backup; then
+        log_error "Backup failed!"
+        exit 1
+    fi
+
+    # Backup ServerCharacters if present
+    backup_server_characters
+
+    # Cleanup old backups
+    cleanup_by_age
+    cleanup_by_count
+
+    log "Backup process complete"
+}
+
+main "$@"

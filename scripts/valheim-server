@@ -1,0 +1,306 @@
+#!/bin/bash
+# Valheim server launcher script
+# Handles BepInEx integration and graceful shutdown
+
+set -e
+SCRIPT_NAME="server"
+source /opt/valheim/scripts/common.sh
+
+# Server PID for signal handling
+SERVER_PID=""
+
+# Signal handler for graceful shutdown
+shutdown_handler() {
+    log "Received shutdown signal, stopping server gracefully..."
+    if [[ -n "$SERVER_PID" ]]; then
+        # Use SIGINT for graceful world save (Valheim prefers this)
+        kill -INT "$SERVER_PID" 2>/dev/null || true
+        wait "$SERVER_PID" 2>/dev/null || true
+    fi
+    log "Server shutdown complete"
+    exit 0
+}
+
+# Setup signal handlers
+trap shutdown_handler SIGTERM SIGINT SIGHUP
+
+# Reset environment for clean start (prevents LD_* from growing on restarts)
+reset_environment() {
+    # Clear any inherited LD_* variables to prevent accumulation
+    unset LD_PRELOAD
+    unset LD_LIBRARY_PATH
+    unset DOORSTOP_ENABLED
+    unset DOORSTOP_TARGET_ASSEMBLY
+}
+
+# Clean up any lingering processes and files from previous run
+cleanup_previous_run() {
+    log "Cleaning up previous run..."
+
+    # Kill any lingering valheim server processes
+    if pgrep -f "valheim_server.x86_64" > /dev/null 2>&1; then
+        log "Killing lingering valheim_server processes..."
+        pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
+        sleep 2
+    fi
+
+    # Clean up named pipe
+    rm -f /tmp/valheim-server-log-pipe
+
+    # Clean up any stale lock files in config
+    rm -f "$CONFIG_DIR"/*.lock 2>/dev/null || true
+
+    # Clean up Unity crash handler temp files
+    rm -rf /tmp/crashes 2>/dev/null || true
+    rm -rf /tmp/unity* 2>/dev/null || true
+    rm -rf /tmp/Crash* 2>/dev/null || true
+
+    log "Cleanup complete"
+}
+
+# Setup BepInEx if enabled
+setup_bepinex() {
+    if [[ "$BEPINEX" != "true" ]]; then
+        return 0
+    fi
+
+    log "BepInEx enabled, configuring..."
+
+    # Check if BepInEx exists in volume
+    if [[ ! -d "$BEPINEX_DIR/BepInEx" ]]; then
+        log_warn "BepInEx directory not found in $BEPINEX_DIR"
+        log_warn "Please mount BepInEx files to /bepinex/BepInEx/"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    # Clear BepInEx cache to detect new/changed plugins
+    if [[ -d "$BEPINEX_DIR/BepInEx/cache" ]]; then
+        log "Clearing BepInEx cache for fresh plugin detection..."
+        rm -rf "$BEPINEX_DIR/BepInEx/cache" 2>/dev/null || true
+    fi
+
+    # Clear patched assemblies and interop (can cause issues on restart)
+    log "Clearing BepInEx temporary files..."
+    find "$BEPINEX_DIR/BepInEx" -name "*.patched" -delete 2>/dev/null || true
+    rm -rf "$BEPINEX_DIR/BepInEx/interop" 2>/dev/null || true
+    rm -rf "$BEPINEX_DIR/BepInEx/unhollowed" 2>/dev/null || true
+
+    # Ensure plugins directory exists
+    mkdir -p "$BEPINEX_DIR/BepInEx/plugins" 2>/dev/null || true
+
+    # Create symlinks from volume to server directory
+    ln -sfn "$BEPINEX_DIR/BepInEx" "$VALHEIM_DIR/BepInEx"
+
+    # Check for doorstop_libs directory
+    if [[ ! -d "$BEPINEX_DIR/doorstop_libs" ]]; then
+        log_error "doorstop_libs directory not found in $BEPINEX_DIR"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    # Check for doorstop library
+    if [[ ! -f "$BEPINEX_DIR/doorstop_libs/libdoorstop_x64.so" ]]; then
+        log_error "libdoorstop_x64.so not found in doorstop_libs!"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    # Symlink doorstop_libs directory
+    ln -sfn "$BEPINEX_DIR/doorstop_libs" "$VALHEIM_DIR/doorstop_libs"
+
+    # Check for BepInEx preloader
+    if [[ ! -f "$VALHEIM_DIR/BepInEx/core/BepInEx.Preloader.dll" ]]; then
+        log_error "BepInEx.Preloader.dll not found! BepInEx installation incomplete."
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    # Set doorstop environment variables (matching official BepInEx script)
+    export DOORSTOP_ENABLED=1
+    export DOORSTOP_TARGET_ASSEMBLY="./BepInEx/core/BepInEx.Preloader.dll"
+
+    # Set library paths fresh (not appending to avoid growth on restarts)
+    export LD_LIBRARY_PATH="./doorstop_libs"
+    export LD_PRELOAD="libdoorstop_x64.so"
+
+    log "BepInEx doorstop configured:"
+    log "  DOORSTOP_ENABLED=$DOORSTOP_ENABLED"
+    log "  DOORSTOP_TARGET_ASSEMBLY=$DOORSTOP_TARGET_ASSEMBLY"
+    log "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+    log "  LD_PRELOAD=$LD_PRELOAD"
+
+    # List plugins
+    local plugin_count
+    plugin_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
+    log "BepInEx plugins found: $plugin_count"
+
+    log "BepInEx configured successfully"
+}
+
+# Build server launch arguments
+build_args() {
+    local args="-nographics -batchmode"
+    args+=" -name \"${SERVER_NAME}\""
+    args+=" -port ${SERVER_PORT}"
+    args+=" -world \"${WORLD_NAME}\""
+    args+=" -public ${SERVER_PUBLIC}"
+    args+=" -savedir \"${CONFIG_DIR}\""
+
+    if [[ -n "$SERVER_PASS" ]]; then
+        if [[ ${#SERVER_PASS} -lt 5 ]]; then
+            log_error "SERVER_PASS must be at least 5 characters!"
+            exit 1
+        fi
+        args+=" -password \"${SERVER_PASS}\""
+    fi
+
+    if [[ "$CROSSPLAY" == "true" ]]; then
+        args+=" -crossplay"
+    fi
+
+    echo "$args"
+}
+
+# Log server output to both stdout and syslog with level detection
+log_server_output() {
+    while IFS= read -r line; do
+        # Detect log level from game output
+        local level="info"
+        local stderr=0
+
+        # Unity/Valheim patterns
+        if [[ "$line" =~ ^ERROR:|Error:|^\[Error|^\[Fatal|\[error\]|Exception:|NullReference ]]; then
+            level="err"
+            stderr=1
+        elif [[ "$line" =~ ^WARNING:|Warning:|^\[Warning|\[warn\]|^\[Warn ]]; then
+            level="warning"
+        # BepInEx patterns
+        elif [[ "$line" =~ ^\[Error\ *:|\[Fatal\ *: ]]; then
+            level="err"
+            stderr=1
+        elif [[ "$line" =~ ^\[Warning\ *: ]]; then
+            level="warning"
+        elif [[ "$line" =~ ^\[Debug\ *: ]]; then
+            level="debug"
+        fi
+
+        # Output to stdout/stderr based on level
+        if [[ $stderr -eq 1 ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-game] $line" >&2
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-game] $line"
+        fi
+
+        # Send to syslog with appropriate priority
+        if [[ -S /dev/log ]]; then
+            /usr/local/bin/logger -t "valheim-game" -p "local0.$level" "$line" 2>/dev/null || true
+        fi
+    done
+}
+
+# Start the server
+start_server() {
+    cd "$VALHEIM_DIR"
+
+    local args
+    args=$(build_args)
+
+    # Add linux64 to library path (after BepInEx setup, so doorstop_libs is first)
+    export LD_LIBRARY_PATH="./linux64:${LD_LIBRARY_PATH:-}"
+    export SteamAppId=892970
+
+    # Create named pipe for logging
+    local log_pipe="/tmp/valheim-server-log-pipe"
+    rm -f "$log_pipe"
+    mkfifo "$log_pipe"
+
+    # Start log processor in background
+    log_server_output < "$log_pipe" &
+    local log_pid=$!
+
+    if [[ "$BEPINEX" == "true" ]]; then
+        log "Starting Valheim with BepInEx..."
+    else
+        log "Starting Valheim server..."
+    fi
+    log "Arguments: $args"
+
+    # Start server (doorstop env vars handle BepInEx if enabled)
+    eval ./valheim_server.x86_64 "$args" > "$log_pipe" 2>&1 &
+    SERVER_PID=$!
+
+    log "Server started with PID: $SERVER_PID"
+
+    # Initialize activity timestamp
+    update_activity_timestamp
+
+    # Wait for server process
+    wait "$SERVER_PID"
+    local exit_code=$?
+
+    # Cleanup
+    kill "$log_pid" 2>/dev/null || true
+    rm -f "$log_pipe"
+
+    log "Server process exited with code: $exit_code"
+    return $exit_code
+}
+
+# Wait for init to complete
+wait_for_init() {
+    local marker="/tmp/valheim-init-complete"
+    local timeout=600  # 10 minutes for server download
+    local elapsed=0
+
+    log "Waiting for valheim-init to complete..."
+
+    while [[ ! -f "$marker" && $elapsed -lt $timeout ]]; do
+        sleep 2
+        ((elapsed += 2))
+    done
+
+    if [[ -f "$marker" ]]; then
+        log "Init complete, proceeding..."
+        return 0
+    else
+        log_error "Init did not complete within ${timeout}s"
+        return 1
+    fi
+}
+
+# Main
+main() {
+    # Reset environment for clean start (important for supervisord restarts)
+    reset_environment
+
+    # Clean up any lingering processes/files from previous run
+    cleanup_previous_run
+
+    # Wait for init script to finish (server install, cron setup, etc.)
+    wait_for_init
+
+    log "=== Valheim Server Launcher ==="
+    log "Server Name: ${SERVER_NAME}"
+    log "World Name: ${WORLD_NAME}"
+    log "Port: ${SERVER_PORT}"
+    log "Public: ${SERVER_PUBLIC}"
+    log "Crossplay: ${CROSSPLAY}"
+    log "BepInEx: ${BEPINEX}"
+
+    # Check if server files exist
+    if [[ ! -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
+        log_error "Valheim server not installed!"
+        log_error "Run valheim-updater first or wait for initial installation."
+        exit 1
+    fi
+
+    setup_bepinex
+    start_server
+}
+
+main "$@"

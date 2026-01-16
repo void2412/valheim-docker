@@ -1,0 +1,219 @@
+#!/bin/bash
+# Valheim initialization script
+# Runs once at container startup via supervisord
+# Installs server, generates config, sets up cron
+
+set -e
+SCRIPT_NAME="init"
+source /opt/valheim/scripts/common.sh
+
+log "=== Valheim Init Starting ==="
+
+# Ensure directories exist with correct permissions
+setup_directories() {
+    log "Setting up directories..."
+    mkdir -p /config/worlds_local /bepinex /backups
+    chown -R valheim:valheim /config /bepinex /backups
+    chown -R valheim:valheim /opt/valheim
+}
+
+# Install/update Valheim server on first run
+install_server() {
+    if [[ -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
+        log "Valheim server already installed"
+        return 0
+    fi
+
+    log "First run detected - installing Valheim server..."
+    log "This may take several minutes to download ~1GB..."
+
+    /opt/valheim/scripts/valheim-updater
+
+    if [[ ! -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
+        log_error "Failed to install Valheim server!"
+        exit 1
+    fi
+
+    log "Valheim server installed successfully"
+}
+
+# Install BepInEx if enabled but not found
+install_bepinex() {
+    if [[ "$BEPINEX" != "true" ]]; then
+        return 0
+    fi
+
+    # Check if BepInEx already installed
+    if [[ -d "$BEPINEX_DIR/BepInEx" && -d "$BEPINEX_DIR/doorstop_libs" ]]; then
+        log "BepInEx already installed"
+        return 0
+    fi
+
+    log "BepInEx enabled but not found, downloading..."
+
+    # Fetch BepInExPack_Valheim from Thunderstore (Valheim-specific pack)
+    local package="denikson-BepInExPack_Valheim"
+    local api_url="https://thunderstore.io/c/valheim/api/v1/package/"
+
+    log "Fetching latest BepInExPack_Valheim from Thunderstore..."
+
+    # Get package info and extract download URL
+    local pkg_info
+    pkg_info=$(curl -fsSL "$api_url" 2>/dev/null | grep -o "{[^}]*\"full_name\":\"$package\"[^}]*}" | head -1)
+
+    if [[ -z "$pkg_info" ]]; then
+        # Fallback: try direct package endpoint
+        pkg_info=$(curl -fsSL "https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/" 2>/dev/null)
+    fi
+
+    local download_url
+    local version
+    download_url=$(echo "$pkg_info" | grep -Po '"download_url":\s*"\K[^"]+' | head -1)
+    version=$(echo "$pkg_info" | grep -Po '"version_number":\s*"\K[^"]+' | head -1)
+
+    if [[ -z "$download_url" ]]; then
+        log_error "Failed to get BepInEx download URL from Thunderstore"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    log "Downloading BepInExPack_Valheim v${version} from Thunderstore..."
+
+    # Download to temp file
+    local tmpfile="/tmp/bepinex.zip"
+    if ! curl -fsSL -o "$tmpfile" "$download_url"; then
+        log_error "Failed to download BepInEx from $download_url"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+
+    # Extract to temp directory first (Thunderstore packages have nested structure)
+    log "Extracting BepInEx..."
+    local extract_dir="/tmp/bepinex_extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+
+    if ! unzip -q -o "$tmpfile" -d "$extract_dir"; then
+        log_error "Failed to extract BepInEx"
+        rm -f "$tmpfile"
+        rm -rf "$extract_dir"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+    rm -f "$tmpfile"
+
+    # Thunderstore packages extract to BepInExPack_Valheim/ subdirectory
+    # Move contents to bepinex volume
+    if [[ -d "$extract_dir/BepInExPack_Valheim" ]]; then
+        cp -r "$extract_dir/BepInExPack_Valheim/"* "$BEPINEX_DIR/"
+    elif [[ -d "$extract_dir/BepInEx" ]]; then
+        # Direct structure (no nested folder)
+        cp -r "$extract_dir/"* "$BEPINEX_DIR/"
+    else
+        log_error "Unexpected BepInEx package structure"
+        rm -rf "$extract_dir"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+        return 0
+    fi
+    rm -rf "$extract_dir"
+
+    # Set permissions
+    chown -R valheim:valheim "$BEPINEX_DIR"
+    chmod +x "$BEPINEX_DIR/doorstop_libs/"*.so 2>/dev/null || true
+
+    # Verify installation
+    if [[ -d "$BEPINEX_DIR/BepInEx" && -d "$BEPINEX_DIR/doorstop_libs" ]]; then
+        log "BepInExPack_Valheim v${version} installed successfully"
+    else
+        log_error "BepInEx installation incomplete"
+        log_warn "Continuing without BepInEx..."
+        export BEPINEX="false"
+    fi
+}
+
+# Setup cron jobs
+setup_cron() {
+    log "Setting up cron jobs..."
+
+    # Use /etc/cron.d/ for Debian cron (requires user field)
+    local crontab_file="/etc/cron.d/valheim"
+
+    # Start with empty crontab
+    cat > "$crontab_file" << 'CRON_HEADER'
+# Valheim Docker cron jobs
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CRON_HEADER
+
+    # Export env vars for cron
+    echo "SYSLOG_REMOTE_HOST=${SYSLOG_REMOTE_HOST:-}" >> "$crontab_file"
+    echo "" >> "$crontab_file"
+
+    # Backup cron (note: cron.d format requires user field)
+    if [[ "$BACKUPS" == "true" && -n "$BACKUPS_CRON" ]]; then
+        echo "$BACKUPS_CRON root /opt/valheim/scripts/valheim-backup >> /proc/1/fd/1 2>&1" >> "$crontab_file"
+        log "Backup cron scheduled: $BACKUPS_CRON"
+    fi
+
+    # Restart cron
+    if [[ -n "$RESTART_CRON" ]]; then
+        local restart_cmd="supervisorctl restart valheim-server"
+        if [[ "$RESTART_IF_IDLE" == "true" ]]; then
+            restart_cmd="bash -c 'source /opt/valheim/scripts/common.sh && is_server_idle && supervisorctl restart valheim-server'"
+        fi
+        echo "$RESTART_CRON root $restart_cmd >> /proc/1/fd/1 2>&1" >> "$crontab_file"
+        log "Restart cron scheduled: $RESTART_CRON (RESTART_IF_IDLE=$RESTART_IF_IDLE)"
+    fi
+
+    # Cron.d files must end with newline and have proper permissions
+    echo "" >> "$crontab_file"
+    chmod 644 "$crontab_file"
+}
+
+# Print configuration summary
+print_config() {
+    log "=== Configuration Summary ==="
+    log "Server Name:   $SERVER_NAME"
+    log "World Name:    $WORLD_NAME"
+    log "Port:          $SERVER_PORT"
+    log "Public:        $SERVER_PUBLIC"
+    log "Crossplay:     $CROSSPLAY"
+    log "BepInEx:       $BEPINEX"
+    log "Backups:       $BACKUPS"
+    if [[ "$BACKUPS" == "true" ]]; then
+        log "  Schedule:    $BACKUPS_CRON"
+        log "  Max Age:     $BACKUPS_MAX_AGE days"
+        log "  Max Count:   $BACKUPS_MAX_COUNT"
+        log "  Compression: $BACKUPS_ZIP"
+    fi
+    if [[ -n "$RESTART_CRON" ]]; then
+        log "Restart:       $RESTART_CRON (idle: $RESTART_IF_IDLE)"
+    fi
+    if [[ -n "$SYSLOG_REMOTE_HOST" ]]; then
+        log "Remote Syslog: $SYSLOG_REMOTE_HOST:$SYSLOG_REMOTE_PORT"
+    fi
+    log "=============================="
+}
+
+# Create ready marker
+mark_ready() {
+    touch /tmp/valheim-init-complete
+    log "=== Valheim Init Complete ==="
+}
+
+# Main
+main() {
+    setup_directories
+    install_server
+    install_bepinex
+    setup_cron
+    print_config
+    mark_ready
+}
+
+main "$@"

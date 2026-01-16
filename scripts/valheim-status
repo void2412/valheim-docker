@@ -1,0 +1,150 @@
+#!/bin/bash
+# Valheim server status script
+# Shows server status, player count, and idle state
+
+SCRIPT_NAME="status"
+source /opt/valheim/scripts/common.sh
+
+# Get detailed status
+show_status() {
+    echo "=== Valheim Server Status ==="
+    echo ""
+
+    # Server process
+    local pid
+    pid=$(get_server_pid)
+    if [[ -n "$pid" ]]; then
+        echo "Server PID:    $pid (running)"
+    else
+        echo "Server PID:    not running"
+    fi
+
+    # Configuration
+    echo ""
+    echo "=== Configuration ==="
+    echo "Server Name:   ${SERVER_NAME:-not set}"
+    echo "World Name:    ${WORLD_NAME:-not set}"
+    echo "Port:          ${SERVER_PORT:-2456}"
+    echo "Public:        ${SERVER_PUBLIC:-1}"
+    echo "Crossplay:     ${CROSSPLAY:-false}"
+    echo "BepInEx:       ${BEPINEX:-false}"
+
+    # Player info
+    echo ""
+    echo "=== Player Status ==="
+    local player_count
+    player_count=$(get_player_count)
+    echo "Players:       $player_count"
+
+    local idle_status
+    if is_server_idle; then
+        idle_status="yes"
+    else
+        idle_status="no"
+    fi
+    echo "Idle:          $idle_status"
+
+    # Last activity
+    local last_activity
+    last_activity=$(get_last_activity_timestamp)
+    if [[ "$last_activity" -gt 0 ]]; then
+        local activity_date
+        activity_date=$(date -d "@$last_activity" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$last_activity" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "unknown")
+        echo "Last Activity: $activity_date"
+    fi
+
+    # World files
+    echo ""
+    echo "=== World Files ==="
+    local world_dir="$CONFIG_DIR/worlds_local"
+    if [[ -d "$world_dir" ]]; then
+        if [[ -f "$world_dir/${WORLD_NAME}.db" ]]; then
+            local world_size
+            world_size=$(du -h "$world_dir/${WORLD_NAME}.db" 2>/dev/null | cut -f1)
+            echo "World DB:      ${WORLD_NAME}.db ($world_size)"
+        else
+            echo "World DB:      not found"
+        fi
+
+        if [[ -f "$world_dir/${WORLD_NAME}.fwl" ]]; then
+            echo "World FWL:     ${WORLD_NAME}.fwl"
+        fi
+    else
+        echo "World Dir:     not created yet"
+    fi
+
+    # Backups
+    echo ""
+    echo "=== Backups ==="
+    if [[ -d "$BACKUP_DIR" ]]; then
+        local backup_count
+        backup_count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f 2>/dev/null | wc -l)
+        echo "Backup Count:  $backup_count"
+
+        # Latest backup
+        local latest_backup
+        latest_backup=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f -printf '%T+ %p\n' 2>/dev/null | sort -r | head -1 | cut -d' ' -f2-)
+        if [[ -n "$latest_backup" ]]; then
+            echo "Latest:        $(basename "$latest_backup")"
+        fi
+    else
+        echo "Backup Dir:    not created"
+    fi
+
+    # BepInEx
+    if [[ "$BEPINEX" == "true" ]]; then
+        echo ""
+        echo "=== BepInEx ==="
+        if [[ -d "$BEPINEX_DIR/BepInEx" ]]; then
+            local plugin_count
+            plugin_count=$(find "$BEPINEX_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
+            echo "Plugins:       $plugin_count"
+
+            if [[ $plugin_count -gt 0 ]]; then
+                echo "Plugin List:"
+                find "$BEPINEX_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | while read -r plugin; do
+                    echo "  - $(basename "$plugin")"
+                done
+            fi
+        else
+            echo "Status:        not installed"
+        fi
+    fi
+}
+
+# JSON output for scripting
+show_json() {
+    local pid
+    pid=$(get_server_pid)
+    local running="false"
+    [[ -n "$pid" ]] && running="true"
+
+    local player_count
+    player_count=$(get_player_count)
+
+    local idle="false"
+    is_server_idle && idle="true"
+
+    cat <<EOF
+{
+  "running": $running,
+  "pid": ${pid:-null},
+  "server_name": "${SERVER_NAME}",
+  "world_name": "${WORLD_NAME}",
+  "port": ${SERVER_PORT:-2456},
+  "players": $player_count,
+  "idle": $idle,
+  "bepinex": ${BEPINEX:-false}
+}
+EOF
+}
+
+# Main
+case "${1:-}" in
+    --json|-j)
+        show_json
+        ;;
+    *)
+        show_status
+        ;;
+esac
