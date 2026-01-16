@@ -12,8 +12,8 @@ log "=== Valheim Init Starting ==="
 # Ensure directories exist with correct permissions
 setup_directories() {
     log "Setting up directories..."
-    mkdir -p /config/worlds_local /bepinex /backups
-    chown -R valheim:valheim /config /bepinex /backups
+    mkdir -p "$CONFIG_DIR/worlds_local" "$BACKUP_DIR" "$VALHEIM_DIR"
+    chown -R valheim:valheim "$CONFIG_DIR" "$BACKUP_DIR" "$VALHEIM_DIR"
     chown -R valheim:valheim /opt/valheim
 }
 
@@ -43,8 +43,8 @@ install_bepinex() {
         return 0
     fi
 
-    # Check if BepInEx already installed
-    if [[ -d "$BEPINEX_DIR/BepInEx" && -d "$BEPINEX_DIR/doorstop_libs" ]]; then
+    # Check if BepInEx already installed (now in server directory)
+    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
         log "BepInEx already installed"
         return 0
     fi
@@ -106,12 +106,12 @@ install_bepinex() {
     rm -f "$tmpfile"
 
     # Thunderstore packages extract to BepInExPack_Valheim/ subdirectory
-    # Move contents to bepinex volume
+    # Install directly to server directory
     if [[ -d "$extract_dir/BepInExPack_Valheim" ]]; then
-        cp -r "$extract_dir/BepInExPack_Valheim/"* "$BEPINEX_DIR/"
+        cp -r "$extract_dir/BepInExPack_Valheim/"* "$VALHEIM_DIR/"
     elif [[ -d "$extract_dir/BepInEx" ]]; then
         # Direct structure (no nested folder)
-        cp -r "$extract_dir/"* "$BEPINEX_DIR/"
+        cp -r "$extract_dir/"* "$VALHEIM_DIR/"
     else
         log_error "Unexpected BepInEx package structure"
         rm -rf "$extract_dir"
@@ -122,11 +122,11 @@ install_bepinex() {
     rm -rf "$extract_dir"
 
     # Set permissions
-    chown -R valheim:valheim "$BEPINEX_DIR"
-    chmod +x "$BEPINEX_DIR/doorstop_libs/"*.so 2>/dev/null || true
+    chown -R valheim:valheim "$VALHEIM_DIR"
+    chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
     # Verify installation
-    if [[ -d "$BEPINEX_DIR/BepInEx" && -d "$BEPINEX_DIR/doorstop_libs" ]]; then
+    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
         log "BepInExPack_Valheim v${version} installed successfully"
     else
         log_error "BepInEx installation incomplete"

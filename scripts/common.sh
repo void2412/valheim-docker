@@ -2,9 +2,8 @@
 # Common functions and variables for Valheim scripts
 
 export VALHEIM_DIR="/opt/valheim/server"
-export CONFIG_DIR="/config"
+export CONFIG_DIR="/saves"
 export BACKUP_DIR="/backups"
-export BEPINEX_DIR="/bepinex"
 export STEAMCMD="/opt/steamcmd/steamcmd.sh"
 export VALHEIM_APP_ID=896660
 export VALHEIM_PID_FILE="/var/run/valheim.pid"
@@ -57,7 +56,7 @@ is_server_running() {
 # Get player count by parsing server log
 # Returns 0 if unable to determine
 get_player_count() {
-    local log_file="/config/server.log"
+    local log_file="$CONFIG_DIR/server.log"
     local count=0
 
     # Try to count connected players from log

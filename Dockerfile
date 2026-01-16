@@ -33,9 +33,9 @@ RUN useradd -m -u 1000 -s /bin/bash valheim
 
 # Create directories
 RUN mkdir -p /opt/valheim/server /opt/valheim/scripts /opt/valheim/config \
-    /config /bepinex /backups \
+    /saves /backups \
     /var/log/supervisor /var/spool/cron/crontabs \
-    && chown -R valheim:valheim /opt/valheim /config /bepinex /backups
+    && chown -R valheim:valheim /opt/valheim /saves /backups
 
 # Setup BusyBox symlinks for crond, syslogd, and logger
 RUN ln -sf /bin/busybox /usr/local/bin/crond \
@@ -87,7 +87,7 @@ ENV SERVER_NAME="Valheim Server" \
 EXPOSE 2456/udp 2457/udp 9001/tcp 2457/tcp
 
 # Volumes
-VOLUME ["/config", "/bepinex", "/backups"]
+VOLUME ["/opt/valheim/server", "/saves", "/backups"]
 
 # Working directory
 WORKDIR /opt/valheim

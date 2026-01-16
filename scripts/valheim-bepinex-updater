@@ -1,0 +1,206 @@
+#!/bin/bash
+# BepInEx updater script
+# Force reinstalls BepInEx (stops server, removes old, installs fresh, restarts)
+# Run via: supervisorctl start bepinex-updater
+
+set -e
+SCRIPT_NAME="bepinex-updater"
+source /opt/valheim/scripts/common.sh
+
+# Stop server if running (via supervisorctl)
+stop_server_if_running() {
+    local status
+    status=$(supervisorctl status valheim-server 2>/dev/null | awk '{print $2}') || true
+
+    if [[ "$status" == "RUNNING" ]]; then
+        log "Server is running, stopping for BepInEx update..."
+        supervisorctl stop valheim-server
+
+        # Wait for server process to fully exit
+        local timeout=70
+        local elapsed=0
+        while is_server_running && [[ $elapsed -lt $timeout ]]; do
+            sleep 2
+            ((elapsed += 2))
+        done
+
+        if is_server_running; then
+            log_warn "Server process still running after ${timeout}s, force killing..."
+            pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
+            sleep 2
+        fi
+
+        log "Server stopped"
+    else
+        log "Server not running (status: ${status:-unknown})"
+    fi
+}
+
+# Remove existing BepInEx installation
+remove_bepinex() {
+    log "Removing existing BepInEx installation..."
+
+    # Remove BepInEx directories
+    if [[ -d "$VALHEIM_DIR/BepInEx" ]]; then
+        # Backup plugins before removal
+        if [[ -d "$VALHEIM_DIR/BepInEx/plugins" ]]; then
+            local plugin_count
+            plugin_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
+            if [[ $plugin_count -gt 0 ]]; then
+                log "Backing up $plugin_count plugins to /tmp/bepinex-plugins-backup..."
+                rm -rf /tmp/bepinex-plugins-backup
+                cp -r "$VALHEIM_DIR/BepInEx/plugins" /tmp/bepinex-plugins-backup
+            fi
+        fi
+
+        rm -rf "$VALHEIM_DIR/BepInEx"
+        log "Removed BepInEx directory"
+    fi
+
+    # Remove doorstop files
+    if [[ -d "$VALHEIM_DIR/doorstop_libs" ]]; then
+        rm -rf "$VALHEIM_DIR/doorstop_libs"
+        log "Removed doorstop_libs directory"
+    fi
+
+    # Remove doorstop config files
+    rm -f "$VALHEIM_DIR/doorstop_config.ini" 2>/dev/null || true
+    rm -f "$VALHEIM_DIR/run_bepinex.sh" 2>/dev/null || true
+    rm -f "$VALHEIM_DIR/start_game_bepinex.sh" 2>/dev/null || true
+    rm -f "$VALHEIM_DIR/start_server_bepinex.sh" 2>/dev/null || true
+
+    log "BepInEx removal complete"
+}
+
+# Install fresh BepInEx (same logic as valheim-init)
+install_bepinex() {
+    log "Installing fresh BepInEx..."
+
+    # Fetch BepInExPack_Valheim from Thunderstore (Valheim-specific pack)
+    # API format: /api/experimental/package/{namespace}/{package_name}/
+    local api_url="https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/"
+
+    log "Fetching latest BepInExPack_Valheim info from Thunderstore..."
+
+    local response
+    response=$(curl -fsSL "$api_url" 2>/dev/null) || {
+        log_error "Failed to fetch BepInEx package info from Thunderstore"
+        log_error "URL: $api_url"
+        return 1
+    }
+
+    # Extract version and download URL
+    local version download_url
+    version=$(echo "$response" | grep -Po '"version_number":\s*"\K[^"]+' | head -1)
+    download_url=$(echo "$response" | grep -Po '"download_url":\s*"\K[^"]+' | head -1)
+
+    if [[ -z "$version" || -z "$download_url" ]]; then
+        log_error "Failed to parse BepInEx package info"
+        return 1
+    fi
+
+    log "Found BepInExPack_Valheim v${version}"
+    log "Download URL: $download_url"
+
+    # Download package
+    local tmpfile="/tmp/bepinex-pack.zip"
+    log "Downloading BepInExPack_Valheim..."
+    if ! curl -fsSL -o "$tmpfile" "$download_url"; then
+        log_error "Failed to download BepInEx package from $download_url"
+        return 1
+    fi
+
+    # Extract to temp directory
+    local extract_dir="/tmp/bepinex-extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+
+    log "Extracting BepInEx package..."
+    if ! unzip -q "$tmpfile" -d "$extract_dir"; then
+        log_error "Failed to extract BepInEx package"
+        rm -f "$tmpfile"
+        rm -rf "$extract_dir"
+        return 1
+    fi
+    rm -f "$tmpfile"
+
+    # Thunderstore packages extract to BepInExPack_Valheim/ subdirectory
+    # Install directly to server directory
+    if [[ -d "$extract_dir/BepInExPack_Valheim" ]]; then
+        cp -r "$extract_dir/BepInExPack_Valheim/"* "$VALHEIM_DIR/"
+    elif [[ -d "$extract_dir/BepInEx" ]]; then
+        # Direct structure (no nested folder)
+        cp -r "$extract_dir/"* "$VALHEIM_DIR/"
+    else
+        log_error "Unexpected BepInEx package structure"
+        rm -rf "$extract_dir"
+        return 1
+    fi
+    rm -rf "$extract_dir"
+
+    # Set permissions
+    chown -R valheim:valheim "$VALHEIM_DIR"
+    chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
+
+    # Verify installation
+    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
+        log "BepInExPack_Valheim v${version} installed successfully"
+    else
+        log_error "BepInEx installation incomplete"
+        return 1
+    fi
+
+    # Restore plugins backup if exists
+    if [[ -d /tmp/bepinex-plugins-backup ]]; then
+        log "Restoring plugins from backup..."
+        mkdir -p "$VALHEIM_DIR/BepInEx/plugins"
+        cp -r /tmp/bepinex-plugins-backup/* "$VALHEIM_DIR/BepInEx/plugins/" 2>/dev/null || true
+        chown -R valheim:valheim "$VALHEIM_DIR/BepInEx/plugins"
+        rm -rf /tmp/bepinex-plugins-backup
+
+        local restored_count
+        restored_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
+        log "Restored $restored_count plugins"
+    fi
+
+    return 0
+}
+
+# Start server after update
+start_server_after_update() {
+    log "Starting server after BepInEx update..."
+    supervisorctl start valheim-server
+    log "Server start command sent"
+}
+
+# Main
+main() {
+    log "=== BepInEx Updater ==="
+
+    if [[ "$BEPINEX" != "true" ]]; then
+        log_warn "BEPINEX is not enabled (BEPINEX=$BEPINEX)"
+        log_warn "Set BEPINEX=true to use BepInEx"
+        exit 0
+    fi
+
+    # Stop server if running
+    stop_server_if_running
+
+    # Remove existing BepInEx
+    remove_bepinex
+
+    # Install fresh BepInEx
+    if ! install_bepinex; then
+        log_error "BepInEx installation failed!"
+        log "Attempting to restart server without BepInEx..."
+        start_server_after_update
+        exit 1
+    fi
+
+    log "BepInEx update complete, starting server..."
+    start_server_after_update
+
+    log "=== BepInEx Updater Finished ==="
+}
+
+main "$@"

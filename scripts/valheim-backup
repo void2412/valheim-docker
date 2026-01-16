@@ -16,17 +16,20 @@ check_backup_enabled() {
 }
 
 # Check idle requirement
+# BACKUPS_IF_IDLE=true  → backup always (even when no players)
+# BACKUPS_IF_IDLE=false → only backup when players are connected
 check_idle_requirement() {
-    if [[ "$BACKUPS_IF_IDLE" != "true" ]]; then
+    if [[ "$BACKUPS_IF_IDLE" == "true" ]]; then
         return 0  # Backup regardless of idle status
     fi
 
+    # Only backup when players are connected
     if is_server_idle; then
-        return 0
+        log "Server idle (no players), skipping backup (BACKUPS_IF_IDLE=false)"
+        return 1
     fi
 
-    log "Server not idle, skipping backup (BACKUPS_IF_IDLE=true)"
-    return 1
+    return 0  # Players connected, proceed with backup
 }
 
 # Create world backup

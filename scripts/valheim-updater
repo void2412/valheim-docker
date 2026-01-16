@@ -1,27 +1,40 @@
 #!/bin/bash
 # Valheim server updater script
-# Uses steamcmd to install/update game files
+# Stops server if running, updates via steamcmd, then restarts
+# Run via: supervisorctl start valheim-updater
 
 set -e
 SCRIPT_NAME="updater"
 source /opt/valheim/scripts/common.sh
 
-# Check if update should proceed based on idle status
-check_idle_requirement() {
-    if [[ "$RESTART_IF_IDLE" != "true" ]]; then
-        return 0
-    fi
+# Stop server if running (via supervisorctl)
+stop_server_if_running() {
+    # Check if valheim-server is running in supervisord
+    local status
+    status=$(supervisorctl status valheim-server 2>/dev/null | awk '{print $2}') || true
 
-    if ! is_server_running; then
-        return 0  # Server not running, safe to update
-    fi
+    if [[ "$status" == "RUNNING" ]]; then
+        log "Server is running, stopping for update..."
+        supervisorctl stop valheim-server
 
-    if is_server_idle; then
-        return 0  # Server idle, safe to update
-    fi
+        # Wait for server process to fully exit
+        local timeout=70  # slightly longer than stopwaitsecs
+        local elapsed=0
+        while is_server_running && [[ $elapsed -lt $timeout ]]; do
+            sleep 2
+            ((elapsed += 2))
+        done
 
-    log "Server not idle, skipping update (RESTART_IF_IDLE=true)"
-    return 1
+        if is_server_running; then
+            log_warn "Server process still running after ${timeout}s, force killing..."
+            pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
+            sleep 2
+        fi
+
+        log "Server stopped"
+    else
+        log "Server not running (status: ${status:-unknown})"
+    fi
 }
 
 # Get current build ID from manifest
@@ -121,28 +134,126 @@ verify_installation() {
     return 0
 }
 
+# Install BepInEx if enabled (steamcmd may have removed it)
+install_bepinex() {
+    if [[ "$BEPINEX" != "true" ]]; then
+        return 0
+    fi
+
+    # Check if BepInEx still exists after update
+    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
+        log "BepInEx still present after update"
+        return 0
+    fi
+
+    log "BepInEx missing after update, reinstalling..."
+
+    # Fetch BepInExPack_Valheim from Thunderstore
+    local api_url="https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/"
+
+    log "Fetching latest BepInExPack_Valheim from Thunderstore..."
+
+    local pkg_info
+    pkg_info=$(curl -fsSL "$api_url" 2>/dev/null) || {
+        log_error "Failed to fetch BepInEx package info"
+        log_warn "Continuing without BepInEx..."
+        return 0
+    }
+
+    local download_url version
+    download_url=$(echo "$pkg_info" | grep -Po '"download_url":\s*"\K[^"]+' | head -1)
+    version=$(echo "$pkg_info" | grep -Po '"version_number":\s*"\K[^"]+' | head -1)
+
+    if [[ -z "$download_url" ]]; then
+        log_error "Failed to get BepInEx download URL"
+        log_warn "Continuing without BepInEx..."
+        return 0
+    fi
+
+    log "Downloading BepInExPack_Valheim v${version}..."
+
+    local tmpfile="/tmp/bepinex.zip"
+    if ! curl -fsSL -o "$tmpfile" "$download_url"; then
+        log_error "Failed to download BepInEx"
+        log_warn "Continuing without BepInEx..."
+        return 0
+    fi
+
+    # Extract to temp directory
+    local extract_dir="/tmp/bepinex_extract"
+    rm -rf "$extract_dir"
+    mkdir -p "$extract_dir"
+
+    if ! unzip -q -o "$tmpfile" -d "$extract_dir"; then
+        log_error "Failed to extract BepInEx"
+        rm -f "$tmpfile"
+        rm -rf "$extract_dir"
+        log_warn "Continuing without BepInEx..."
+        return 0
+    fi
+    rm -f "$tmpfile"
+
+    # Install to server directory
+    if [[ -d "$extract_dir/BepInExPack_Valheim" ]]; then
+        cp -r "$extract_dir/BepInExPack_Valheim/"* "$VALHEIM_DIR/"
+    elif [[ -d "$extract_dir/BepInEx" ]]; then
+        cp -r "$extract_dir/"* "$VALHEIM_DIR/"
+    else
+        log_error "Unexpected BepInEx package structure"
+        rm -rf "$extract_dir"
+        log_warn "Continuing without BepInEx..."
+        return 0
+    fi
+    rm -rf "$extract_dir"
+
+    # Set permissions
+    chown -R valheim:valheim "$VALHEIM_DIR"
+    chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
+
+    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
+        log "BepInExPack_Valheim v${version} reinstalled successfully"
+    else
+        log_error "BepInEx installation incomplete"
+    fi
+}
+
+# Start server after update
+start_server_after_update() {
+    log "Starting server after update..."
+    supervisorctl start valheim-server
+    log "Server start command sent"
+}
+
 # Main
 main() {
     log "=== Valheim Server Updater ==="
 
-    # Check idle requirement if server is running
-    if ! check_idle_requirement; then
-        exit 0
-    fi
+    # Stop server if running
+    stop_server_if_running
 
     # Run update
     if ! run_update; then
         log_error "Update failed!"
+        log "Attempting to restart server despite update failure..."
+        start_server_after_update
         exit 1
     fi
 
     # Verify installation
     if ! verify_installation; then
         log_error "Installation verification failed!"
+        log "Attempting to restart server despite verification failure..."
+        start_server_after_update
         exit 1
     fi
 
-    log "Update complete"
+    # Reinstall BepInEx if needed (steamcmd may have removed it)
+    install_bepinex
+
+    log "Update complete, starting server..."
+    start_server_after_update
+
+    log "=== Valheim Server Updater Finished ==="
 }
 
 main "$@"
