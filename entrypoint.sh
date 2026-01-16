@@ -171,7 +171,7 @@ stderr_logfile=/dev/fd/2
 stderr_logfile_maxbytes=0
 environment=${env_vars}
 
-[program:bepinex-updater]
+[program:valheim-updater-bepinex]
 command=/opt/valheim/scripts/valheim-bepinex-updater
 user=root
 priority=21
