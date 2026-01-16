@@ -150,7 +150,11 @@ install_bepinex() {
         return 1
     fi
 
-    # Restore plugins backup if exists
+    return 0
+}
+
+# Restore plugins from backup (always called, regardless of install success)
+restore_plugins_backup() {
     if [[ -d /tmp/bepinex-plugins-backup ]]; then
         log "Restoring plugins from backup..."
         mkdir -p "$VALHEIM_DIR/BepInEx/plugins"
@@ -162,8 +166,6 @@ install_bepinex() {
         restored_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
         log "Restored $restored_count plugins"
     fi
-
-    return 0
 }
 
 # Start server after update
@@ -186,21 +188,34 @@ main() {
     # Stop server if running
     stop_server_if_running
 
-    # Remove existing BepInEx
+    # Remove existing BepInEx (backs up plugins)
     remove_bepinex
 
     # Install fresh BepInEx
+    local install_success=true
     if ! install_bepinex; then
         log_error "BepInEx installation failed!"
-        log "Attempting to restart server without BepInEx..."
-        start_server_after_update
-        exit 1
+        install_success=false
     fi
 
-    log "BepInEx update complete, starting server..."
+    # ALWAYS restore plugins backup (even if install failed)
+    restore_plugins_backup
+
+    # Start server
+    if [[ "$install_success" == "true" ]]; then
+        log "BepInEx update complete, starting server..."
+    else
+        log "Attempting to restart server after failed BepInEx install..."
+    fi
+    
+
+    
     start_server_after_update
 
-    log "=== BepInEx Updater Finished ==="
+    if [[ "$install_success" != "true" ]]; then
+        log "=== BepInEx Updater Finished ==="
+        exit 1
+    fi
 }
 
 main "$@"
