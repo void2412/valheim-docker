@@ -200,9 +200,10 @@ print_config() {
     log "=============================="
 }
 
-# Create ready marker
-mark_ready() {
-    touch /tmp/valheim-init-complete
+# Start valheim-server via supervisord
+start_server() {
+    log "Starting valheim-server..."
+    supervisorctl start valheim-server
     log "=== Valheim Init Complete ==="
 }
 
@@ -213,7 +214,7 @@ main() {
     install_bepinex
     setup_cron
     print_config
-    mark_ready
+    start_server
 }
 
 main "$@"

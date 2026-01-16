@@ -251,28 +251,6 @@ start_server() {
     return $exit_code
 }
 
-# Wait for init to complete
-wait_for_init() {
-    local marker="/tmp/valheim-init-complete"
-    local timeout=600  # 10 minutes for server download
-    local elapsed=0
-
-    log "Waiting for valheim-init to complete..."
-
-    while [[ ! -f "$marker" && $elapsed -lt $timeout ]]; do
-        sleep 2
-        ((elapsed += 2))
-    done
-
-    if [[ -f "$marker" ]]; then
-        log "Init complete, proceeding..."
-        return 0
-    else
-        log_error "Init did not complete within ${timeout}s"
-        return 1
-    fi
-}
-
 # Main
 main() {
     # Reset environment for clean start (important for supervisord restarts)
@@ -280,9 +258,6 @@ main() {
 
     # Clean up any lingering processes/files from previous run
     cleanup_previous_run
-
-    # Wait for init script to finish (server install, cron setup, etc.)
-    wait_for_init
 
     log "=== Valheim Server Launcher ==="
     log "Server Name: ${SERVER_NAME}"
