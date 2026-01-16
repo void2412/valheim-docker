@@ -6,7 +6,7 @@ services:
     image: valheim-server:latest
     container_name: valheim-server
     restart: unless-stopped
-    stop_grace_period: 120s
+    stop_grace_period: 75s
     ports:
       - "2456:2456/udp"
       - "2457:2457/udp"
@@ -31,7 +31,7 @@ services:
 
       # Backup settings
       - BACKUPS=true
-      - BACKUPS_CRON=0 * * * *
+      - BACKUPS_CRON=*/10 * * * *
       - BACKUPS_MAX_AGE=3
       - BACKUPS_MAX_COUNT=24
       - BACKUPS_IF_IDLE=true
@@ -53,13 +53,9 @@ services:
       - SYSLOG_REMOTE_AND_LOCAL=true
 
     volumes:
-      - ./config:/config
+      # Server files + BepInEx (persists across container rebuilds)
+      - ./server:/opt/valheim/server
+      # World saves
+      - ./saves:/saves
+      # Backups
       - ./backups:/backups
-      # Uncomment for BepInEx mod support
-      - ./bepinex:/bepinex
-
-volumes:
-  valheim-config:
-    name: valheim-config
-  valheim-backups:
-    name: valheim-backups
