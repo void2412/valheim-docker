@@ -10,6 +10,7 @@ services:
     ports:
       - "2456:2456/udp"
       - "2457:2457/udp"
+      - "2457:2457/tcp"
       # Uncomment to expose supervisor web UI
       - "9001:9001/tcp"
     environment:
@@ -43,19 +44,19 @@ services:
       # Supervisor HTTP (optional)
       - SUPERVISOR_HTTP=true
       - SUPERVISOR_HTTP_PORT=9001
-      - SUPERVISOR_HTTP_USER=void
-      - SUPERVISOR_HTTP_PASS=Vo1d@2412
+      - SUPERVISOR_HTTP_USER=admin
+      - SUPERVISOR_HTTP_PASS=changeme
 
       # Remote syslog (optional)
-      - SYSLOG_REMOTE_HOST=192.168.88.92
+      - SYSLOG_REMOTE_HOST=
       - SYSLOG_REMOTE_PORT=514
       - SYSLOG_REMOTE_AND_LOCAL=true
 
     volumes:
-      - D:\valheim-server\server 1\config:/config
-      - D:\valheim-server\server 1\backups:/backups
+      - ./config:/config
+      - ./backups:/backups
       # Uncomment for BepInEx mod support
-      - D:\valheim-server\server 1\bepinex:/bepinex
+      - ./bepinex:/bepinex
 
 volumes:
   valheim-config:

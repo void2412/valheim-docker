@@ -84,7 +84,7 @@ ENV SERVER_NAME="Valheim Server" \
     SYSLOG_REMOTE_AND_LOCAL=true
 
 # Expose ports
-EXPOSE 2456/udp 2457/udp 9001/tcp
+EXPOSE 2456/udp 2457/udp 9001/tcp 2457/tcp
 
 # Volumes
 VOLUME ["/config", "/bepinex", "/backups"]
