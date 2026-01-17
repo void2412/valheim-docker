@@ -1,0 +1,157 @@
+#!/bin/bash
+# Generate supervisord configuration from environment variables
+
+set -e
+
+OUTPUT="/etc/supervisor/supervisord.conf"
+mkdir -p /etc/supervisor
+
+# Build environment string with all needed variables
+build_env_string() {
+    local env_vars="SYSLOG_REMOTE_HOST=\"${SYSLOG_REMOTE_HOST:-}\""
+    env_vars+=",SYSLOG_REMOTE_PORT=\"${SYSLOG_REMOTE_PORT:-514}\""
+    env_vars+=",SERVER_NAME=\"${SERVER_NAME}\""
+    env_vars+=",SERVER_PORT=\"${SERVER_PORT}\""
+    env_vars+=",WORLD_NAME=\"${WORLD_NAME}\""
+    env_vars+=",SERVER_PASS=\"${SERVER_PASS}\""
+    env_vars+=",SERVER_PUBLIC=\"${SERVER_PUBLIC}\""
+    env_vars+=",CROSSPLAY=\"${CROSSPLAY}\""
+    env_vars+=",BEPINEX=\"${BEPINEX}\""
+    env_vars+=",BEPINEX_VERSION=\"${BEPINEX_VERSION:-}\""
+    env_vars+=",BACKUPS=\"${BACKUPS}\""
+    env_vars+=",BACKUPS_CRON=\"${BACKUPS_CRON}\""
+    env_vars+=",BACKUPS_MAX_AGE=\"${BACKUPS_MAX_AGE}\""
+    env_vars+=",BACKUPS_MAX_COUNT=\"${BACKUPS_MAX_COUNT}\""
+    env_vars+=",BACKUPS_IF_IDLE=\"${BACKUPS_IF_IDLE}\""
+    env_vars+=",BACKUPS_IDLE_GRACE_PERIOD=\"${BACKUPS_IDLE_GRACE_PERIOD}\""
+    env_vars+=",BACKUPS_ZIP=\"${BACKUPS_ZIP}\""
+    env_vars+=",RESTART_CRON=\"${RESTART_CRON}\""
+    env_vars+=",RESTART_IF_IDLE=\"${RESTART_IF_IDLE}\""
+    echo "$env_vars"
+}
+
+ENV_VARS=$(build_env_string)
+
+# Base configuration
+cat > "$OUTPUT" << 'EOF'
+[supervisord]
+nodaemon=true
+user=root
+logfile=/dev/null
+logfile_maxbytes=0
+pidfile=/var/run/supervisord.pid
+
+[unix_http_server]
+file=/var/run/supervisor.sock
+chmod=0700
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisorctl]
+serverurl=unix:///var/run/supervisor.sock
+
+EOF
+
+# HTTP server (optional)
+if [[ "$SUPERVISOR_HTTP" == "true" ]]; then
+    cat >> "$OUTPUT" << EOF
+[inet_http_server]
+port=0.0.0.0:${SUPERVISOR_HTTP_PORT}
+username=${SUPERVISOR_HTTP_USER}
+password=${SUPERVISOR_HTTP_PASS}
+
+EOF
+fi
+
+# Program: valheim-init
+cat >> "$OUTPUT" << EOF
+[program:valheim-init]
+command=/opt/valheim/scripts/valheim-init
+user=root
+priority=1
+autostart=true
+autorestart=false
+startsecs=0
+exitcodes=0
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=${ENV_VARS}
+
+EOF
+
+# Program: valheim-server
+cat >> "$OUTPUT" << EOF
+[program:valheim-server]
+command=/bin/bash -c 'exec /opt/valheim/scripts/valheim-server > >(exec /opt/valheim/scripts/container-log-filter) 2>&1'
+user=root
+directory=/opt/valheim/server
+priority=10
+autostart=false
+autorestart=true
+startsecs=10
+startretries=3
+stopwaitsecs=60
+stopsignal=INT
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=HOME="/root",USER="root",${ENV_VARS}
+
+EOF
+
+# Program: cron
+cat >> "$OUTPUT" << 'EOF'
+[program:cron]
+command=/usr/sbin/cron -f
+user=root
+priority=10
+autostart=true
+autorestart=true
+startsecs=1
+stopwaitsecs=5
+stopsignal=TERM
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+
+EOF
+
+# Program: valheim-updater
+cat >> "$OUTPUT" << EOF
+[program:valheim-updater]
+command=/opt/valheim/scripts/valheim-updater
+user=root
+priority=20
+autostart=false
+autorestart=false
+startsecs=0
+exitcodes=0,1
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=${ENV_VARS}
+
+EOF
+
+# Program: valheim-updater-bepinex
+cat >> "$OUTPUT" << EOF
+[program:valheim-updater-bepinex]
+command=/opt/valheim/scripts/valheim-bepinex-updater
+user=root
+priority=21
+autostart=false
+autorestart=false
+startsecs=0
+exitcodes=0,1
+stdout_logfile=/dev/fd/1
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/fd/2
+stderr_logfile_maxbytes=0
+environment=${ENV_VARS}
+EOF
