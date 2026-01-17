@@ -36,7 +36,7 @@ services:
       - BACKUPS_MAX_COUNT=24
       - BACKUPS_IF_IDLE=true
       - BACKUPS_IDLE_GRACE_PERIOD=3600
-      - BACKUPS_ZIP=true
+      - BACKUPS_COMPRESS=true
 
       # BepInEx mod support
       - BEPINEX=true

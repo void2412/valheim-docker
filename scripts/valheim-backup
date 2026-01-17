@@ -58,7 +58,7 @@ create_backup() {
     local backup_name="${WORLD_NAME}-${timestamp}"
 
     # Create backup
-    if [[ "$BACKUPS_ZIP" == "true" ]]; then
+    if [[ "$BACKUPS_COMPRESS" == "true" ]]; then
         local backup_file="$BACKUP_DIR/${backup_name}.tar.gz"
         log "Creating compressed backup: ${backup_name}.tar.gz"
         tar -czf "$backup_file" -C "$world_dir" .
@@ -105,36 +105,38 @@ backup_server_characters() {
 
 # Remove old backups by age
 cleanup_by_age() {
-    if [[ "$BACKUPS_MAX_AGE" -le 0 ]]; then
+    local max_age="${BACKUPS_MAX_AGE:-0}"
+    if [[ ! "$max_age" =~ ^[0-9]+$ ]] || [[ "$max_age" -le 0 ]]; then
         return 0
     fi
 
-    log "Removing backups older than $BACKUPS_MAX_AGE days..."
+    log "Removing backups older than $max_age days..."
 
     local count
-    count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$BACKUPS_MAX_AGE 2>/dev/null | wc -l)
+    count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$max_age 2>/dev/null | wc -l)
 
     if [[ $count -gt 0 ]]; then
-        find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$BACKUPS_MAX_AGE -delete
+        find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$max_age -delete
         log "Removed $count old backups"
     fi
 }
 
 # Remove old backups by count
 cleanup_by_count() {
-    if [[ "$BACKUPS_MAX_COUNT" -le 0 ]]; then
-        return 0  # 0 means unlimited
+    local max_count="${BACKUPS_MAX_COUNT:-0}"
+    if [[ ! "$max_count" =~ ^[0-9]+$ ]] || [[ "$max_count" -le 0 ]]; then
+        return 0  # 0 or invalid means unlimited
     fi
 
     local current_count
     current_count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f 2>/dev/null | wc -l)
 
-    if [[ $current_count -le $BACKUPS_MAX_COUNT ]]; then
+    if [[ $current_count -le $max_count ]]; then
         return 0
     fi
 
-    local to_delete=$((current_count - BACKUPS_MAX_COUNT))
-    log "Removing $to_delete oldest backups (keeping $BACKUPS_MAX_COUNT)..."
+    local to_delete=$((current_count - max_count))
+    log "Removing $to_delete oldest backups (keeping $max_count)..."
 
     # Delete oldest files first
     find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f -printf '%T+ %p\n' 2>/dev/null \
@@ -151,7 +153,7 @@ main() {
     log "=== Valheim Backup ==="
     log "World: ${WORLD_NAME}"
     log "Backup dir: ${BACKUP_DIR}"
-    log "Compression: ${BACKUPS_ZIP}"
+    log "Compression: ${BACKUPS_COMPRESS}"
     log "Max age: ${BACKUPS_MAX_AGE} days"
     log "Max count: ${BACKUPS_MAX_COUNT} (0=unlimited)"
 

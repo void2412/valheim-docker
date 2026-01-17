@@ -50,7 +50,7 @@ docker-compose down
 | `BACKUPS_MAX_AGE` | 3 | Days to keep |
 | `BACKUPS_MAX_COUNT` | 0 | Max backups (0=unlimited) |
 | `BACKUPS_IF_IDLE` | true | Only backup when idle |
-| `BACKUPS_ZIP` | true | Compress backups |
+| `BACKUPS_COMPRESS` | true | Compress backups |
 
 ### Other Settings
 

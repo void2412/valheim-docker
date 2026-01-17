@@ -29,7 +29,7 @@ RUN mkdir -p /opt/steamcmd \
     && /opt/steamcmd/steamcmd.sh +quit
 
 # Create directories
-RUN mkdir -p /opt/valheim/server /opt/valheim/scripts /opt/valheim/config \
+RUN mkdir -p /opt/valheim/server /opt/valheim/scripts \
     /saves /backups \
     /var/log/supervisor /var/spool/cron/crontabs
 
@@ -46,9 +46,6 @@ ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
 COPY scripts/ /opt/valheim/scripts/
 RUN chmod +x /opt/valheim/scripts/*
 
-# Copy configuration template
-COPY config/supervisord.conf.template /opt/valheim/config/
-
 # Copy entrypoint
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -57,24 +54,24 @@ RUN chmod +x /entrypoint.sh
 ENV SERVER_NAME="Valheim Server" \
     SERVER_PORT=2456 \
     WORLD_NAME="Dedicated" \
-    SERVER_PASS="" \
+    SERVER_PASS="secret" \
     SERVER_PUBLIC=1 \
     CROSSPLAY=false \
-    RESTART_CRON="" \
+    RESTART_CRON="0 5 * * *" \
     RESTART_IF_IDLE=true \
     TZ=UTC \
     BACKUPS=true \
-    BACKUPS_CRON="0 * * * *" \
+    BACKUPS_CRON="*/15 * * * *" \
     BACKUPS_MAX_AGE=3 \
-    BACKUPS_MAX_COUNT=0 \
+    BACKUPS_MAX_COUNT=24 \
     BACKUPS_IF_IDLE=true \
     BACKUPS_IDLE_GRACE_PERIOD=3600 \
-    BACKUPS_ZIP=true \
+    BACKUPS_COMPRESS=true \
     BEPINEX=false \
     SUPERVISOR_HTTP=false \
     SUPERVISOR_HTTP_PORT=9001 \
     SUPERVISOR_HTTP_USER=admin \
-    SUPERVISOR_HTTP_PASS="" \
+    SUPERVISOR_HTTP_PASS="changeme" \
     SYSLOG_REMOTE_HOST="" \
     SYSLOG_REMOTE_PORT=514 \
     SYSLOG_REMOTE_AND_LOCAL=true
