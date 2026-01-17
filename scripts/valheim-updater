@@ -207,7 +207,6 @@ install_bepinex() {
     rm -rf "$extract_dir"
 
     # Set permissions
-    chown -R valheim:valheim "$VALHEIM_DIR"
     chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
     if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then

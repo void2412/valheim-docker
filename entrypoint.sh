@@ -127,7 +127,7 @@ stderr_logfile_maxbytes=0
 environment=${env_vars}
 
 [program:valheim-server]
-command=/opt/valheim/scripts/valheim-server
+command=/bin/bash -c 'exec /opt/valheim/scripts/valheim-server > >(exec /opt/valheim/scripts/container-log-filter) 2>&1'
 user=root
 directory=/opt/valheim/server
 priority=10

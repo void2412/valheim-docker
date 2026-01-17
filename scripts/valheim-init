@@ -13,8 +13,6 @@ log "=== Valheim Init Starting ==="
 setup_directories() {
     log "Setting up directories..."
     mkdir -p "$CONFIG_DIR/worlds_local" "$BACKUP_DIR" "$VALHEIM_DIR"
-    chown -R valheim:valheim "$CONFIG_DIR" "$BACKUP_DIR" "$VALHEIM_DIR"
-    chown -R valheim:valheim /opt/valheim
 }
 
 # Install/update Valheim server on first run
@@ -122,7 +120,6 @@ install_bepinex() {
     rm -rf "$extract_dir"
 
     # Set permissions
-    chown -R valheim:valheim "$VALHEIM_DIR"
     chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
     # Verify installation

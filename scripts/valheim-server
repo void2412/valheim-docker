@@ -182,43 +182,6 @@ setup_bepinex() {
     log "BepInEx configured successfully"
 }
 
-# Log server output to both stdout and syslog with level detection
-log_server_output() {
-    while IFS= read -r line; do
-        # Detect log level from game output
-        local level="info"
-        local stderr=0
-
-        # Unity/Valheim patterns
-        if [[ "$line" =~ ^ERROR:|Error:|^\[Error|^\[Fatal|\[error\]|Exception:|NullReference ]]; then
-            level="err"
-            stderr=1
-        elif [[ "$line" =~ ^WARNING:|Warning:|^\[Warning|\[warn\]|^\[Warn ]]; then
-            level="warning"
-        # BepInEx patterns
-        elif [[ "$line" =~ ^\[Error\ *:|\[Fatal\ *: ]]; then
-            level="err"
-            stderr=1
-        elif [[ "$line" =~ ^\[Warning\ *: ]]; then
-            level="warning"
-        elif [[ "$line" =~ ^\[Debug\ *: ]]; then
-            level="debug"
-        fi
-
-        # Output to stdout/stderr based on level
-        if [[ $stderr -eq 1 ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-game] $line" >&2
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-game] $line"
-        fi
-
-        # Send to syslog with appropriate priority
-        if [[ -S /dev/log ]]; then
-            /usr/local/bin/logger -t "valheim-game" -p "local0.$level" "$line" 2>/dev/null || true
-        fi
-    done
-}
-
 # Start the server
 start_server() {
     cd "$VALHEIM_DIR"
@@ -237,8 +200,8 @@ start_server() {
     rm -f "$LOG_PIPE"
     mkfifo "$LOG_PIPE"
 
-    # Start log processor in background
-    log_server_output < "$LOG_PIPE" &
+    # Start log processor in background (uses log_game_output from common.sh)
+    log_game_output < "$LOG_PIPE" &
     LOG_PID=$!
 
     if [[ "$BEPINEX" == "true" ]]; then

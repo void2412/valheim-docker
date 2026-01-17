@@ -150,7 +150,6 @@ install_bepinex() {
     rm -rf "$extract_dir"
 
     # Set permissions
-    chown -R valheim:valheim "$VALHEIM_DIR"
     chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
     # Verify installation
@@ -171,7 +170,6 @@ restore_backup() {
         log "Restoring plugins from backup..."
         mkdir -p "$VALHEIM_DIR/BepInEx/plugins"
         cp -r /tmp/bepinex-plugins-backup/* "$VALHEIM_DIR/BepInEx/plugins/" 2>/dev/null || true
-        chown -R valheim:valheim "$VALHEIM_DIR/BepInEx/plugins"
         rm -rf /tmp/bepinex-plugins-backup
 
         local restored_count
@@ -184,7 +182,6 @@ restore_backup() {
         log "Restoring config from backup..."
         mkdir -p "$VALHEIM_DIR/BepInEx/config"
         cp -r /tmp/bepinex-config-backup/* "$VALHEIM_DIR/BepInEx/config/" 2>/dev/null || true
-        chown -R valheim:valheim "$VALHEIM_DIR/BepInEx/config"
         rm -rf /tmp/bepinex-config-backup
 
         local restored_count

@@ -28,14 +28,10 @@ RUN mkdir -p /opt/steamcmd \
     && chmod -R +x /opt/steamcmd \
     && /opt/steamcmd/steamcmd.sh +quit
 
-# Create valheim user
-RUN useradd -m -u 1000 -s /bin/bash valheim
-
 # Create directories
 RUN mkdir -p /opt/valheim/server /opt/valheim/scripts /opt/valheim/config \
     /saves /backups \
-    /var/log/supervisor /var/spool/cron/crontabs \
-    && chown -R valheim:valheim /opt/valheim /saves /backups
+    /var/log/supervisor /var/spool/cron/crontabs
 
 # Setup BusyBox symlinks for crond, syslogd, and logger
 RUN ln -sf /bin/busybox /usr/local/bin/crond \
@@ -47,7 +43,7 @@ RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
 ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
 
 # Copy scripts
-COPY --chown=valheim:valheim scripts/ /opt/valheim/scripts/
+COPY scripts/ /opt/valheim/scripts/
 RUN chmod +x /opt/valheim/scripts/*
 
 # Copy configuration template

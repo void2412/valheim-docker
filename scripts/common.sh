@@ -12,12 +12,10 @@ export VALHEIM_PID_FILE="/var/run/valheim.pid"
 # Default to the calling script's basename
 SCRIPT_NAME="${SCRIPT_NAME:-$(basename "${BASH_SOURCE[1]:-${0}}" 2>/dev/null || echo 'valheim')}"
 
-# Logging functions with script identification
+# Logging functions with script identification and syslog forwarding
 log() {
     local tag="valheim-${SCRIPT_NAME}"
-    local msg="[$tag] $*"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg"
-    # Always try to send to syslog if /dev/log exists
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $*"
     if [[ -S /dev/log ]]; then
         /usr/local/bin/logger -t "$tag" -p local0.info "$*" 2>/dev/null || true
     fi
@@ -25,20 +23,55 @@ log() {
 
 log_error() {
     local tag="valheim-${SCRIPT_NAME}"
-    local msg="[$tag] ERROR: $*"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg" >&2
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] ERROR: $*" >&2
     if [[ -S /dev/log ]]; then
-        /usr/local/bin/logger -t "$tag" -p local0.err "ERROR: $*" 2>/dev/null || true
+        /usr/local/bin/logger -t "$tag" -p local0.err "$*" 2>/dev/null || true
     fi
 }
 
 log_warn() {
     local tag="valheim-${SCRIPT_NAME}"
-    local msg="[$tag] WARN: $*"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $msg"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] WARN: $*"
     if [[ -S /dev/log ]]; then
-        /usr/local/bin/logger -t "$tag" -p local0.warning "WARN: $*" 2>/dev/null || true
+        /usr/local/bin/logger -t "$tag" -p local0.warning "$*" 2>/dev/null || true
     fi
+}
+
+# Process game server output - detects log levels, formats output, forwards to syslog
+# Doorstop warning filtering is handled by valheim-log-filter at supervisord level
+# Usage: some_command | log_game_output
+log_game_output() {
+    local tag="valheim-game"
+    while IFS= read -r line; do
+        # Skip empty lines
+        [[ -z "$line" ]] && continue
+
+        # Detect log level
+        local level="info"
+        local stderr=0
+
+        # Unity/Valheim/BepInEx error patterns
+        if [[ "$line" =~ ERROR:|Error:|\[Error|\[Fatal|\[error\]|Exception:|NullReference ]]; then
+            level="err"
+            stderr=1
+        elif [[ "$line" =~ WARNING:|Warning:|\[Warning|\[warn\]|\[Warn ]]; then
+            level="warning"
+        elif [[ "$line" =~ \[Debug ]]; then
+            level="debug"
+        fi
+
+        # Output to stdout/stderr
+        if [[ $stderr -eq 1 ]]; then
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $line" >&2
+        else
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $line"
+        fi
+
+        # Forward to syslog
+        if [[ -S /dev/log ]]; then
+            /usr/local/bin/logger -t "$tag" -p "local0.$level" "$line" 2>/dev/null || true
+        fi
+    done
 }
 
 # Get server PID

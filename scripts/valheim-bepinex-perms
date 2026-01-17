@@ -1,6 +1,6 @@
 #!/bin/bash
-# Fix BepInEx permissions then start server
-# Runs as root, fixes permissions, then execs server as valheim user
+# Fix BepInEx permissions before server start
+# All processes run as root
 
 SCRIPT_NAME="bepinex-perms"
 source /opt/valheim/scripts/common.sh
@@ -16,9 +16,6 @@ fix_permissions() {
 
     log "Fixing BepInEx permissions..."
 
-    # Fix ownership of entire BepInEx directory
-    chown -R valheim:valheim "$BEPINEX_DIR" 2>/dev/null || true
-
     # Make sure shared libraries are executable
     chmod +x "$BEPINEX_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
@@ -30,25 +27,13 @@ fix_permissions() {
     if [[ $plugin_count -gt 0 ]]; then
         log "Plugin files:"
         find "$BEPINEX_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | while read -r dll; do
-            local perms owner
+            local perms
             perms=$(stat -c "%a" "$dll" 2>/dev/null || echo "???")
-            owner=$(stat -c "%U:%G" "$dll" 2>/dev/null || echo "???:???")
-            log "  - $(basename "$dll") ($perms, $owner)"
+            log "  - $(basename "$dll") ($perms)"
         done
     fi
 
     log "BepInEx permissions fixed"
 }
 
-# If called without arguments, just fix permissions (for initial startup)
-# If called with "start", fix permissions then exec server as valheim user
-case "${1:-}" in
-    start)
-        fix_permissions
-        log "Starting valheim-server as valheim user..."
-        exec su -s /bin/bash valheim -c "/opt/valheim/scripts/valheim-server"
-        ;;
-    *)
-        fix_permissions
-        ;;
-esac
+fix_permissions
