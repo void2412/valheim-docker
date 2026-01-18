@@ -9,7 +9,7 @@ source /opt/valheim/scripts/common.sh
 # Check if backups are enabled
 check_backup_enabled() {
     if [[ "$BACKUPS" != "true" ]]; then
-        log "Backups disabled (BACKUPS=$BACKUPS)"
+        echo "Backups disabled, skipping"
         return 1
     fi
     return 0
@@ -25,7 +25,7 @@ check_idle_requirement() {
 
     # Only backup when players are connected
     if is_server_idle; then
-        log "Server idle (no players), skipping backup (BACKUPS_IF_IDLE=false)"
+        echo "Server idle, skipping backup"
         return 1
     fi
 
@@ -38,14 +38,13 @@ create_backup() {
 
     # Check if world directory exists
     if [[ ! -d "$world_dir" ]]; then
-        log_warn "World directory not found: $world_dir"
-        log_warn "Server may not have created a world yet"
+        echo "World directory not found: $world_dir"
         return 1
     fi
 
     # Check if world files exist
     if [[ ! -f "$world_dir/${WORLD_NAME}.db" ]]; then
-        log_warn "World file not found: ${WORLD_NAME}.db"
+        echo "World file not found: ${WORLD_NAME}.db"
         return 1
     fi
 
@@ -58,13 +57,12 @@ create_backup() {
     local backup_name="${WORLD_NAME}-${timestamp}"
 
     # Create backup
+    echo "Creating backup: $backup_name"
     if [[ "$BACKUPS_COMPRESS" == "true" ]]; then
         local backup_file="$BACKUP_DIR/${backup_name}.tar.gz"
-        log "Creating compressed backup: ${backup_name}.tar.gz"
         tar -czf "$backup_file" -C "$world_dir" .
     else
         local backup_file="$BACKUP_DIR/${backup_name}.tar"
-        log "Creating backup: ${backup_name}.tar"
         tar -cf "$backup_file" -C "$world_dir" .
     fi
 
@@ -75,7 +73,7 @@ create_backup() {
         fi
     done
 
-    log "Backup created successfully: $backup_file"
+    echo "Backup complete"
     return 0
 }
 
@@ -98,9 +96,7 @@ backup_server_characters() {
     timestamp=$(date +%Y%m%d-%H%M%S)
     local backup_file="$BACKUP_DIR/servercharacters-${timestamp}.tar.gz"
 
-    log "Backing up $fch_count ServerCharacters files..."
     tar -czf "$backup_file" -C "$chars_dir" .
-    log "ServerCharacters backup: $backup_file"
 }
 
 # Remove old backups by age
@@ -110,14 +106,12 @@ cleanup_by_age() {
         return 0
     fi
 
-    log "Removing backups older than $max_age days..."
-
     local count
     count=$(find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$max_age 2>/dev/null | wc -l)
 
     if [[ $count -gt 0 ]]; then
+        echo "Removing $count backup(s) older than $max_age days"
         find "$BACKUP_DIR" -name "${WORLD_NAME}-*" -type f -mtime +$max_age -delete
-        log "Removed $count old backups"
     fi
 }
 
@@ -136,7 +130,7 @@ cleanup_by_count() {
     fi
 
     local to_delete=$((current_count - max_count))
-    log "Removing $to_delete oldest backups (keeping $max_count)..."
+    echo "Removing $to_delete old backup(s) (keeping $max_count)"
 
     # Delete oldest files first
     find "$BACKUP_DIR" -name "${WORLD_NAME}-*.tar*" -type f -printf '%T+ %p\n' 2>/dev/null \
@@ -144,32 +138,33 @@ cleanup_by_count() {
         | head -n $to_delete \
         | cut -d' ' -f2- \
         | xargs -r rm -f
+}
 
-    log "Backup rotation complete"
+# Print backup config
+print_config() {
+    echo "World: $WORLD_NAME | Compress: $BACKUPS_COMPRESS | MaxAge: ${BACKUPS_MAX_AGE}d | MaxCount: $BACKUPS_MAX_COUNT | IdleBackup: $BACKUPS_IF_IDLE"
 }
 
 # Main
 main() {
-    log "=== Valheim Backup ==="
-    log "World: ${WORLD_NAME}"
-    log "Backup dir: ${BACKUP_DIR}"
-    log "Compression: ${BACKUPS_COMPRESS}"
-    log "Max age: ${BACKUPS_MAX_AGE} days"
-    log "Max count: ${BACKUPS_MAX_COUNT} (0=unlimited)"
+    echo "=== Backup Starting ==="
+    print_config
 
     # Check if backups enabled
     if ! check_backup_enabled; then
+        echo "=== Backup Skipped ==="
         exit 0
     fi
 
     # Check idle requirement
     if ! check_idle_requirement; then
+        echo "=== Backup Skipped ==="
         exit 0
     fi
 
     # Create backup
     if ! create_backup; then
-        log_error "Backup failed!"
+        echo "=== Backup Failed ==="
         exit 1
     fi
 
@@ -180,7 +175,7 @@ main() {
     cleanup_by_age
     cleanup_by_count
 
-    log "Backup process complete"
+    echo "=== Backup Complete ==="
 }
 
 main "$@"

@@ -14,7 +14,7 @@ stop_server_if_running() {
     status=$(supervisorctl status valheim-server 2>/dev/null | awk '{print $2}') || true
 
     if [[ "$status" == "RUNNING" ]]; then
-        log "Server is running, stopping for update..."
+        echo "Server is running, stopping via supervisorctl..."
         supervisorctl stop valheim-server
 
         # Wait for server process to fully exit
@@ -26,14 +26,13 @@ stop_server_if_running() {
         done
 
         if is_server_running; then
-            log_warn "Server process still running after ${timeout}s, force killing..."
+            echo "Server still running, force killing..."
             pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
             sleep 2
         fi
-
-        log "Server stopped"
+        echo "Server stopped"
     else
-        log "Server not running (status: ${status:-unknown})"
+        echo "Server not running"
     fi
 }
 
@@ -50,62 +49,63 @@ get_current_build() {
 
 # Run steamcmd update
 run_update() {
-    log "Running steamcmd update..."
-    log "Install directory: $VALHEIM_DIR"
 
     local current_build
     current_build=$(get_current_build)
-    log "Current build ID: $current_build"
 
     # Create install directory
     mkdir -p "$VALHEIM_DIR"
 
-    # Run steamcmd and pipe output through logger
+    # Run steamcmd with output formatting
     # Use set +e temporarily to capture exit code properly
     # Note: force_install_dir must come before login
-    # Retry up to 3 times as steamcmd can fail on first attempts
+    # Retry up to 3 times as steamcmd can fail or timeout
     local exit_code=1
     local attempt=1
     local max_attempts=3
+    local timed_out=false
+    local output_file="/tmp/steamcmd-output.txt"
 
     set +e
-    while [[ $attempt -le $max_attempts && $exit_code -ne 0 ]]; do
-        log "steamcmd attempt $attempt of $max_attempts..."
+    while [[ $attempt -le $max_attempts ]]; do
+        timed_out=false
 
+        # Capture output to file while also displaying it
         $STEAMCMD \
             +@sSteamCmdForcePlatformType linux \
             +force_install_dir "$VALHEIM_DIR" \
             +login anonymous \
             +app_update $VALHEIM_APP_ID validate \
-            +quit 2>&1 | while IFS= read -r line; do
-                echo "[$(date '+%Y-%m-%d %H:%M:%S')] [valheim-steamcmd] $line"
-                if [[ -S /dev/log ]]; then
-                    /usr/local/bin/logger -t "valheim-steamcmd" -p local0.info "$line" 2>/dev/null || true
-                fi
+            +quit 2>&1 | tee "$output_file" | while IFS= read -r line; do
+                printf '[valheim-steamcmd] %s\n' "$line"
             done
         exit_code=${PIPESTATUS[0]}
 
-        if [[ $exit_code -ne 0 && $attempt -lt $max_attempts ]]; then
-            log_warn "steamcmd failed with exit code $exit_code, retrying in 5s..."
+        # Check for timeout pattern in output
+        if grep -q "Timed out" "$output_file" 2>/dev/null; then
+            timed_out=true
+            echo "[valheim-steamcmd] Detected timeout, will retry..."
+        fi
+
+        # Success if exit code is 0 AND no timeout detected
+        if [[ $exit_code -eq 0 && "$timed_out" == "false" ]]; then
+            rm -f "$output_file"
+            break
+        fi
+
+        # Retry if not last attempt
+        if [[ $attempt -lt $max_attempts ]]; then
+            echo "[valheim-steamcmd] Attempt $attempt failed, retrying in 5s..."
             sleep 5
         fi
         ((attempt++))
     done
     set -e
+    rm -f "$output_file"
 
-    if [[ $exit_code -ne 0 ]]; then
-        log_error "steamcmd failed with exit code: $exit_code after $max_attempts attempts"
-        return $exit_code
-    fi
-
-    local new_build
-    new_build=$(get_current_build)
-    log "New build ID: $new_build"
-
-    if [[ "$current_build" != "$new_build" ]]; then
-        log "Server updated from build $current_build to $new_build"
-    else
-        log "Server is up to date (build $new_build)"
+    # Fail if exit code non-zero or timed out on last attempt
+    if [[ $exit_code -ne 0 || "$timed_out" == "true" ]]; then
+        return 1
     fi
 
     # Ensure executable permissions
@@ -116,7 +116,6 @@ run_update() {
 
 # Verify installation
 verify_installation() {
-    log "Verifying installation..."
 
     local required_files=(
         "valheim_server.x86_64"
@@ -125,12 +124,10 @@ verify_installation() {
 
     for file in "${required_files[@]}"; do
         if [[ ! -f "$VALHEIM_DIR/$file" ]]; then
-            log_error "Missing required file: $file"
             return 1
         fi
     done
 
-    log "Installation verified successfully"
     return 0
 }
 
@@ -142,21 +139,16 @@ install_bepinex() {
 
     # Check if BepInEx still exists after update
     if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
-        log "BepInEx still present after update"
         return 0
     fi
 
-    log "BepInEx missing after update, reinstalling..."
 
     # Fetch BepInExPack_Valheim from Thunderstore
     local api_url="https://thunderstore.io/api/experimental/package/denikson/BepInExPack_Valheim/"
 
-    log "Fetching latest BepInExPack_Valheim from Thunderstore..."
 
     local pkg_info
     pkg_info=$(curl -fsSL "$api_url" 2>/dev/null) || {
-        log_error "Failed to fetch BepInEx package info"
-        log_warn "Continuing without BepInEx..."
         return 0
     }
 
@@ -165,17 +157,12 @@ install_bepinex() {
     version=$(echo "$pkg_info" | grep -Po '"version_number":\s*"\K[^"]+' | head -1)
 
     if [[ -z "$download_url" ]]; then
-        log_error "Failed to get BepInEx download URL"
-        log_warn "Continuing without BepInEx..."
         return 0
     fi
 
-    log "Downloading BepInExPack_Valheim v${version}..."
 
     local tmpfile="/tmp/bepinex.zip"
     if ! curl -fsSL -o "$tmpfile" "$download_url"; then
-        log_error "Failed to download BepInEx"
-        log_warn "Continuing without BepInEx..."
         return 0
     fi
 
@@ -185,10 +172,8 @@ install_bepinex() {
     mkdir -p "$extract_dir"
 
     if ! unzip -q -o "$tmpfile" -d "$extract_dir"; then
-        log_error "Failed to extract BepInEx"
         rm -f "$tmpfile"
         rm -rf "$extract_dir"
-        log_warn "Continuing without BepInEx..."
         return 0
     fi
     rm -f "$tmpfile"
@@ -199,49 +184,35 @@ install_bepinex() {
     elif [[ -d "$extract_dir/BepInEx" ]]; then
         cp -r "$extract_dir/"* "$VALHEIM_DIR/"
     else
-        log_error "Unexpected BepInEx package structure"
         rm -rf "$extract_dir"
-        log_warn "Continuing without BepInEx..."
         return 0
     fi
     rm -rf "$extract_dir"
 
     # Set permissions
     chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
-
-    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
-        log "BepInExPack_Valheim v${version} reinstalled successfully"
-    else
-        log_error "BepInEx installation incomplete"
-    fi
 }
 
 # Schedule server start after script exits (background job survives script exit)
 schedule_server_start() {
-    log "Scheduling server start in 2 seconds..."
     (sleep 2 && supervisorctl start valheim-server) &
     disown
 }
 
 # Main
 main() {
-    log "=== Valheim Server Updater ==="
 
     # Stop server if running
     stop_server_if_running
 
     # Run update
     if ! run_update; then
-        log_error "Update failed!"
-        log "Attempting to restart server despite update failure..."
         schedule_server_start
         exit 1
     fi
 
     # Verify installation
     if ! verify_installation; then
-        log_error "Installation verification failed!"
-        log "Attempting to restart server despite verification failure..."
         schedule_server_start
         exit 1
     fi
@@ -249,7 +220,6 @@ main() {
     # Reinstall BepInEx if needed (steamcmd may have removed it)
     install_bepinex
 
-    log "=== Valheim Server Updater Finished ==="
 
     # Schedule server start after this script exits
     schedule_server_start

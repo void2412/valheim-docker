@@ -14,7 +14,6 @@ fix_permissions() {
         return 0
     fi
 
-    log "Fixing BepInEx permissions..."
 
     # Make sure shared libraries are executable
     chmod +x "$BEPINEX_DIR/doorstop_libs/"*.so 2>/dev/null || true
@@ -22,18 +21,14 @@ fix_permissions() {
     # Log plugin status for debugging
     local plugin_count
     plugin_count=$(find "$BEPINEX_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
-    log "BepInEx plugins found: $plugin_count"
 
     if [[ $plugin_count -gt 0 ]]; then
-        log "Plugin files:"
         find "$BEPINEX_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | while read -r dll; do
             local perms
             perms=$(stat -c "%a" "$dll" 2>/dev/null || echo "???")
-            log "  - $(basename "$dll") ($perms)"
         done
     fi
 
-    log "BepInEx permissions fixed"
 }
 
 fix_permissions

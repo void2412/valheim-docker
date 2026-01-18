@@ -1,278 +1,107 @@
 #!/bin/bash
 # Valheim server launcher script
-# Handles BepInEx integration and graceful shutdown
+# Handles BepInEx integration and graceful shutdown with repeated SIGINT
 
-# Note: Don't use set -e as it interferes with signal handling
-SCRIPT_NAME="server"
 source /opt/valheim/scripts/common.sh
 
-# Global PIDs for signal handling
 SERVER_PID=""
-LOG_PID=""
-LOG_PIPE="/tmp/valheim-server-log-pipe"
-SHUTDOWN_REQUESTED=0
 
-# Signal handler for graceful shutdown
-shutdown_handler() {
-    # Prevent multiple invocations
-    if [[ "$SHUTDOWN_REQUESTED" -eq 1 ]]; then
-        return
+# Signal handler - sends SIGINT every 15 seconds until server exits
+shutdown_server() {
+    if [[ -z "$SERVER_PID" ]] || ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        exit 0
     fi
-    SHUTDOWN_REQUESTED=1
 
-    log "Received shutdown signal, stopping server gracefully..."
+    echo "Shutting down server (PID: $SERVER_PID)..."
 
-    # Kill server process group (negative PID kills entire process group)
-    if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-        log "Sending SIGINT to Valheim server process group (PID: $SERVER_PID)..."
-        # Kill entire process group with negative PID
-        kill -INT -"$SERVER_PID" 2>/dev/null || kill -INT "$SERVER_PID" 2>/dev/null || true
+    while kill -0 "$SERVER_PID" 2>/dev/null; do
+        kill -INT "$SERVER_PID" 2>/dev/null || true
+        echo "Sent SIGINT to server..."
 
-        # Wait for server to exit with timeout
-        local timeout=55
-        local elapsed=0
-        while kill -0 "$SERVER_PID" 2>/dev/null && [[ $elapsed -lt $timeout ]]; do
+        # Wait up to 15 seconds, checking every second
+        for i in {1..10}; do
             sleep 1
-            ((elapsed++))
-            # Log progress every 10 seconds
-            if (( elapsed % 10 == 0 )); then
-                log "Waiting for server to stop... ${elapsed}s"
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                echo "Server stopped"
+                wait "$SERVER_PID" 2>/dev/null
+                exit 0
             fi
         done
+    done
 
-        # Force kill if still running
-        if kill -0 "$SERVER_PID" 2>/dev/null; then
-            log_warn "Server still running after ${timeout}s, sending SIGKILL to process group..."
-            kill -9 -"$SERVER_PID" 2>/dev/null || kill -9 "$SERVER_PID" 2>/dev/null || true
-            sleep 1
-        fi
-    fi
-
-    # Fallback: kill any remaining valheim_server processes by name
-    if pgrep -f "valheim_server.x86_64" > /dev/null 2>&1; then
-        log_warn "Killing remaining valheim_server processes by name..."
-        pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
-        sleep 1
-    fi
-
-    # Kill log processor
-    if [[ -n "$LOG_PID" ]] && kill -0 "$LOG_PID" 2>/dev/null; then
-        kill "$LOG_PID" 2>/dev/null || true
-    fi
-
-    # Clean up pipe
-    rm -f "$LOG_PIPE"
-
-    log "Server shutdown complete"
     exit 0
 }
 
-# Setup signal handlers
-trap shutdown_handler SIGTERM SIGINT SIGHUP
+trap shutdown_server SIGINT SIGTERM
 
-# Reset environment for clean start (prevents LD_* from growing on restarts)
-reset_environment() {
-    # Clear any inherited LD_* variables to prevent accumulation
-    unset LD_PRELOAD
-    unset LD_LIBRARY_PATH
-    unset DOORSTOP_ENABLED
-    unset DOORSTOP_TARGET_ASSEMBLY
-}
+# Reset environment for clean start
+unset LD_PRELOAD
+unset LD_LIBRARY_PATH
+unset DOORSTOP_ENABLED
+unset DOORSTOP_TARGET_ASSEMBLY
 
-# Clean up any lingering processes and files from previous run
-cleanup_previous_run() {
-    log "Cleaning up previous run..."
+# Clean up any lingering processes
+if pgrep -f "valheim_server.x86_64" > /dev/null 2>&1; then
+    pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
+    sleep 2
+fi
 
-    # Kill any lingering valheim server processes
-    if pgrep -f "valheim_server.x86_64" > /dev/null 2>&1; then
-        log "Killing lingering valheim_server processes..."
-        pkill -9 -f "valheim_server.x86_64" 2>/dev/null || true
-        sleep 2
-    fi
+rm -f "$CONFIG_DIR"/*.lock 2>/dev/null || true
+rm -rf /tmp/crashes /tmp/unity* /tmp/Crash* 2>/dev/null || true
 
-    # Clean up named pipe
-    rm -f /tmp/valheim-server-log-pipe
-
-    # Clean up any stale lock files in config
-    rm -f "$CONFIG_DIR"/*.lock 2>/dev/null || true
-
-    # Clean up Unity crash handler temp files
-    rm -rf /tmp/crashes 2>/dev/null || true
-    rm -rf /tmp/unity* 2>/dev/null || true
-    rm -rf /tmp/Crash* 2>/dev/null || true
-
-    log "Cleanup complete"
-}
+# Check if server files exist
+if [[ ! -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
+    exit 1
+fi
 
 # Setup BepInEx if enabled
-setup_bepinex() {
-    if [[ "$BEPINEX" != "true" ]]; then
-        return 0
-    fi
-
-    log "BepInEx enabled, configuring..."
-
-    # Check if BepInEx exists in server directory
-    if [[ ! -d "$VALHEIM_DIR/BepInEx" ]]; then
-        log_warn "BepInEx directory not found in $VALHEIM_DIR"
-        log_warn "BepInEx will be downloaded on next restart if BEPINEX=true"
-        log_warn "Continuing without BepInEx..."
-        export BEPINEX="false"
-        return 0
-    fi
-
-    # Clear BepInEx cache to detect new/changed plugins
-    if [[ -d "$VALHEIM_DIR/BepInEx/cache" ]]; then
-        log "Clearing BepInEx cache for fresh plugin detection..."
+if [[ "$BEPINEX" == "true" ]]; then
+    if [[ -d "$VALHEIM_DIR/BepInEx" ]] && \
+       [[ -d "$VALHEIM_DIR/doorstop_libs" ]] && \
+       [[ -f "$VALHEIM_DIR/doorstop_libs/libdoorstop_x64.so" ]] && \
+       [[ -f "$VALHEIM_DIR/BepInEx/core/BepInEx.Preloader.dll" ]]; then
         rm -rf "$VALHEIM_DIR/BepInEx/cache" 2>/dev/null || true
+        mkdir -p "$VALHEIM_DIR/BepInEx/plugins" 2>/dev/null || true
+    else
+        BEPINEX="false"
     fi
+fi
 
-    # Clear patched assemblies and interop (can cause issues on restart)
-    log "Clearing BepInEx temporary files..."
-    find "$VALHEIM_DIR/BepInEx" -name "*.patched" -delete 2>/dev/null || true
-    rm -rf "$VALHEIM_DIR/BepInEx/interop" 2>/dev/null || true
-    rm -rf "$VALHEIM_DIR/BepInEx/unhollowed" 2>/dev/null || true
+cd "$VALHEIM_DIR"
 
-    # Ensure plugins directory exists
-    mkdir -p "$VALHEIM_DIR/BepInEx/plugins" 2>/dev/null || true
+# Validate password
+if [[ -n "$SERVER_PASS" && ${#SERVER_PASS} -lt 5 ]]; then
+    exit 1
+fi
 
-    # Check for doorstop_libs directory
-    if [[ ! -d "$VALHEIM_DIR/doorstop_libs" ]]; then
-        log_error "doorstop_libs directory not found in $VALHEIM_DIR"
-        log_warn "Continuing without BepInEx..."
-        export BEPINEX="false"
-        return 0
-    fi
+export LD_LIBRARY_PATH="./linux64"
+export SteamAppId=892970
 
-    # Check for doorstop library
-    if [[ ! -f "$VALHEIM_DIR/doorstop_libs/libdoorstop_x64.so" ]]; then
-        log_error "libdoorstop_x64.so not found in doorstop_libs!"
-        log_warn "Continuing without BepInEx..."
-        export BEPINEX="false"
-        return 0
-    fi
+# Initialize activity timestamp
+update_activity_timestamp
 
-    # Check for BepInEx preloader
-    if [[ ! -f "$VALHEIM_DIR/BepInEx/core/BepInEx.Preloader.dll" ]]; then
-        log_error "BepInEx.Preloader.dll not found! BepInEx installation incomplete."
-        log_warn "Continuing without BepInEx..."
-        export BEPINEX="false"
-        return 0
-    fi
-
-    # Set doorstop environment variables (matching official BepInEx script)
+# Start server
+if [[ "$BEPINEX" == "true" ]]; then
     export DOORSTOP_ENABLED=1
     export DOORSTOP_TARGET_ASSEMBLY="./BepInEx/core/BepInEx.Preloader.dll"
-
-    # Set library paths fresh (not appending to avoid growth on restarts)
-    export LD_LIBRARY_PATH="./doorstop_libs"
+    export LD_LIBRARY_PATH="./doorstop_libs:./linux64"
     export LD_PRELOAD="libdoorstop_x64.so"
+fi
 
-    log "BepInEx doorstop configured:"
-    log "  DOORSTOP_ENABLED=$DOORSTOP_ENABLED"
-    log "  DOORSTOP_TARGET_ASSEMBLY=$DOORSTOP_TARGET_ASSEMBLY"
-    log "  LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-    log "  LD_PRELOAD=$LD_PRELOAD"
+# Start server in background and wait
+./valheim_server.x86_64 \
+    -nographics -batchmode \
+    -name "$SERVER_NAME" \
+    -port "$SERVER_PORT" \
+    -world "$WORLD_NAME" \
+    -public "$SERVER_PUBLIC" \
+    -savedir "$CONFIG_DIR" \
+    ${SERVER_PASS:+-password "$SERVER_PASS"} \
+    $([[ "$CROSSPLAY" == "true" ]] && echo "-crossplay") &
 
-    # List plugins
-    local plugin_count
-    plugin_count=$(find "$VALHEIM_DIR/BepInEx/plugins" -name "*.dll" -type f 2>/dev/null | wc -l)
-    log "BepInEx plugins found: $plugin_count"
+SERVER_PID=$!
+echo "Server started (PID: $SERVER_PID)"
 
-    log "BepInEx configured successfully"
-}
-
-# Start the server
-start_server() {
-    cd "$VALHEIM_DIR"
-
-    # Validate password if set
-    if [[ -n "$SERVER_PASS" && ${#SERVER_PASS} -lt 5 ]]; then
-        log_error "SERVER_PASS must be at least 5 characters!"
-        exit 1
-    fi
-
-    # Add linux64 to library path (after BepInEx setup, so doorstop_libs is first)
-    export LD_LIBRARY_PATH="./linux64:${LD_LIBRARY_PATH:-}"
-    export SteamAppId=892970
-
-    # Create named pipe for logging
-    rm -f "$LOG_PIPE"
-    mkfifo "$LOG_PIPE"
-
-    # Start log processor in background (uses log_game_output from common.sh)
-    log_game_output < "$LOG_PIPE" &
-    LOG_PID=$!
-
-    if [[ "$BEPINEX" == "true" ]]; then
-        log "Starting Valheim with BepInEx..."
-    else
-        log "Starting Valheim server..."
-    fi
-
-    # Build command arguments for logging
-    local cmd_args="-nographics -batchmode -name \"$SERVER_NAME\" -port $SERVER_PORT"
-    cmd_args+=" -world \"$WORLD_NAME\" -public $SERVER_PUBLIC -savedir \"$CONFIG_DIR\""
-    [[ -n "$SERVER_PASS" ]] && cmd_args+=" -password \"***\""
-    [[ "$CROSSPLAY" == "true" ]] && cmd_args+=" -crossplay"
-    log "Arguments: $cmd_args"
-
-    # Start server in its own process group (setsid) for clean shutdown
-    # This allows killing the entire process group with kill -INT -$PID
-    setsid ./valheim_server.x86_64 \
-        -nographics -batchmode \
-        -name "$SERVER_NAME" \
-        -port "$SERVER_PORT" \
-        -world "$WORLD_NAME" \
-        -public "$SERVER_PUBLIC" \
-        -savedir "$CONFIG_DIR" \
-        ${SERVER_PASS:+-password "$SERVER_PASS"} \
-        $([[ "$CROSSPLAY" == "true" ]] && echo "-crossplay") \
-        > "$LOG_PIPE" 2>&1 &
-    SERVER_PID=$!
-
-    log "Server started with PID: $SERVER_PID"
-
-    # Initialize activity timestamp
-    update_activity_timestamp
-
-    # Wait for server process
-    wait "$SERVER_PID"
-    local exit_code=$?
-
-    # Cleanup
-    kill "$LOG_PID" 2>/dev/null || true
-    rm -f "$LOG_PIPE"
-
-    log "Server process exited with code: $exit_code"
-    return $exit_code
-}
-
-# Main
-main() {
-    # Reset environment for clean start (important for supervisord restarts)
-    reset_environment
-
-    # Clean up any lingering processes/files from previous run
-    cleanup_previous_run
-
-    log "=== Valheim Server Launcher ==="
-    log "Server Name: ${SERVER_NAME}"
-    log "World Name: ${WORLD_NAME}"
-    log "Port: ${SERVER_PORT}"
-    log "Public: ${SERVER_PUBLIC}"
-    log "Crossplay: ${CROSSPLAY}"
-    log "BepInEx: ${BEPINEX}"
-
-    # Check if server files exist
-    if [[ ! -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
-        log_error "Valheim server not installed!"
-        log_error "Run valheim-updater first or wait for initial installation."
-        exit 1
-    fi
-
-    setup_bepinex
-    start_server
-}
-
-main "$@"
+# Wait for server to exit
+wait "$SERVER_PID"
+exit $?

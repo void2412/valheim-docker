@@ -7,32 +7,25 @@ set -e
 SCRIPT_NAME="init"
 source /opt/valheim/scripts/common.sh
 
-log "=== Valheim Init Starting ==="
 
 # Ensure directories exist with correct permissions
 setup_directories() {
-    log "Setting up directories..."
     mkdir -p "$CONFIG_DIR/worlds_local" "$BACKUP_DIR" "$VALHEIM_DIR"
 }
 
 # Install/update Valheim server on first run
 install_server() {
     if [[ -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
-        log "Valheim server already installed"
         return 0
     fi
 
-    log "First run detected - installing Valheim server..."
-    log "This may take several minutes to download ~1GB..."
 
     /opt/valheim/scripts/valheim-updater
 
     if [[ ! -f "$VALHEIM_DIR/valheim_server.x86_64" ]]; then
-        log_error "Failed to install Valheim server!"
         exit 1
     fi
 
-    log "Valheim server installed successfully"
 }
 
 # Install BepInEx if enabled but not found
@@ -43,17 +36,14 @@ install_bepinex() {
 
     # Check if BepInEx already installed (now in server directory)
     if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
-        log "BepInEx already installed"
         return 0
     fi
 
-    log "BepInEx enabled but not found, downloading..."
 
     # Fetch BepInExPack_Valheim from Thunderstore (Valheim-specific pack)
     local package="denikson-BepInExPack_Valheim"
     local api_url="https://thunderstore.io/c/valheim/api/v1/package/"
 
-    log "Fetching latest BepInExPack_Valheim from Thunderstore..."
 
     # Get package info and extract download URL
     local pkg_info
@@ -70,34 +60,26 @@ install_bepinex() {
     version=$(echo "$pkg_info" | grep -Po '"version_number":\s*"\K[^"]+' | head -1)
 
     if [[ -z "$download_url" ]]; then
-        log_error "Failed to get BepInEx download URL from Thunderstore"
-        log_warn "Continuing without BepInEx..."
         export BEPINEX="false"
         return 0
     fi
 
-    log "Downloading BepInExPack_Valheim v${version} from Thunderstore..."
 
     # Download to temp file
     local tmpfile="/tmp/bepinex.zip"
     if ! curl -fsSL -o "$tmpfile" "$download_url"; then
-        log_error "Failed to download BepInEx from $download_url"
-        log_warn "Continuing without BepInEx..."
         export BEPINEX="false"
         return 0
     fi
 
     # Extract to temp directory first (Thunderstore packages have nested structure)
-    log "Extracting BepInEx..."
     local extract_dir="/tmp/bepinex_extract"
     rm -rf "$extract_dir"
     mkdir -p "$extract_dir"
 
     if ! unzip -q -o "$tmpfile" -d "$extract_dir"; then
-        log_error "Failed to extract BepInEx"
         rm -f "$tmpfile"
         rm -rf "$extract_dir"
-        log_warn "Continuing without BepInEx..."
         export BEPINEX="false"
         return 0
     fi
@@ -111,9 +93,7 @@ install_bepinex() {
         # Direct structure (no nested folder)
         cp -r "$extract_dir/"* "$VALHEIM_DIR/"
     else
-        log_error "Unexpected BepInEx package structure"
         rm -rf "$extract_dir"
-        log_warn "Continuing without BepInEx..."
         export BEPINEX="false"
         return 0
     fi
@@ -123,18 +103,13 @@ install_bepinex() {
     chmod +x "$VALHEIM_DIR/doorstop_libs/"*.so 2>/dev/null || true
 
     # Verify installation
-    if [[ -d "$VALHEIM_DIR/BepInEx" && -d "$VALHEIM_DIR/doorstop_libs" ]]; then
-        log "BepInExPack_Valheim v${version} installed successfully"
-    else
-        log_error "BepInEx installation incomplete"
-        log_warn "Continuing without BepInEx..."
+    if [[ ! -d "$VALHEIM_DIR/BepInEx" || ! -d "$VALHEIM_DIR/doorstop_libs" ]]; then
         export BEPINEX="false"
     fi
 }
 
 # Setup cron jobs
 setup_cron() {
-    log "Setting up cron jobs..."
 
     # Use /etc/cron.d/ for Debian cron (requires user field)
     local crontab_file="/etc/cron.d/valheim"
@@ -157,65 +132,62 @@ BACKUPS_COMPRESS=${BACKUPS_COMPRESS}
 BACKUPS_MAX_AGE=${BACKUPS_MAX_AGE}
 BACKUPS_MAX_COUNT=${BACKUPS_MAX_COUNT}
 BACKUPS_IF_IDLE=${BACKUPS_IF_IDLE}
-SYSLOG_REMOTE_HOST=${SYSLOG_REMOTE_HOST:-}
 
 EOF
 
-    # Backup cron (note: cron.d format requires user field)
+    # Backup cron
     if [[ "$BACKUPS" == "true" && -n "$BACKUPS_CRON" ]]; then
-        echo "$BACKUPS_CRON root /opt/valheim/scripts/valheim-backup >> /proc/1/fd/1 2>&1" >> "$crontab_file"
-        log "Backup cron scheduled: $BACKUPS_CRON"
+        cat >> "$crontab_file" << EOF
+# World backup
+${BACKUPS_CRON} root /opt/valheim/scripts/log-tag backup /opt/valheim/scripts/valheim-backup > /proc/1/fd/1 2>&1
+
+EOF
     fi
 
     # Restart cron
     if [[ -n "$RESTART_CRON" ]]; then
-        local restart_cmd="supervisorctl restart valheim-server"
         if [[ "$RESTART_IF_IDLE" == "true" ]]; then
-            restart_cmd="bash -c 'source /opt/valheim/scripts/common.sh && is_server_idle && supervisorctl restart valheim-server'"
+            cat >> "$crontab_file" << EOF
+# Server restart (idle only)
+${RESTART_CRON} root bash -c 'source /opt/valheim/scripts/common.sh && is_server_idle && supervisorctl restart valheim-server' > /proc/1/fd/1 2>&1
+
+EOF
+        else
+            cat >> "$crontab_file" << EOF
+# Server restart
+${RESTART_CRON} root supervisorctl restart valheim-server > /proc/1/fd/1 2>&1
+
+EOF
         fi
-        echo "$RESTART_CRON root $restart_cmd >> /proc/1/fd/1 2>&1" >> "$crontab_file"
-        log "Restart cron scheduled: $RESTART_CRON (RESTART_IF_IDLE=$RESTART_IF_IDLE)"
     fi
 
     # Cron.d files must end with newline and have proper permissions
-    echo "" >> "$crontab_file"
     chmod 644 "$crontab_file"
 }
 
-# Print configuration summary
+# Print configuration summary (no-op, logging removed)
 print_config() {
-    log "=== Configuration Summary ==="
-    log "Server Name:   $SERVER_NAME"
-    log "World Name:    $WORLD_NAME"
-    log "Port:          $SERVER_PORT"
-    log "Public:        $SERVER_PUBLIC"
-    log "Crossplay:     $CROSSPLAY"
-    log "BepInEx:       $BEPINEX"
-    log "Backups:       $BACKUPS"
-    if [[ "$BACKUPS" == "true" ]]; then
-        log "  Schedule:    $BACKUPS_CRON"
-        log "  Max Age:     $BACKUPS_MAX_AGE days"
-        log "  Max Count:   $BACKUPS_MAX_COUNT"
-        log "  Compression: $BACKUPS_COMPRESS"
-    fi
-    if [[ -n "$RESTART_CRON" ]]; then
-        log "Restart:       $RESTART_CRON (idle: $RESTART_IF_IDLE)"
-    fi
-    if [[ -n "$SYSLOG_REMOTE_HOST" ]]; then
-        log "Remote Syslog: $SYSLOG_REMOTE_HOST:$SYSLOG_REMOTE_PORT"
-    fi
-    log "=============================="
+    :
 }
 
 schedule_server_start() {
-    log "Scheduling server start in 2 seconds..."
-    (sleep 2 && supervisorctl start valheim-server) &
+    # Start server, wait for it to be online, then start cron
+    # Redirect to /proc/1/fd/1 so output appears in container logs
+    (
+        source /opt/valheim/scripts/common.sh
+        sleep 2
+        echo "[valheim-init] Starting server..."
+        supervisorctl start valheim-server
+        # Wait for server to actually be online before starting cron
+        wait_for_server_online 600
+        echo "[valheim-init] Starting cron..."
+        supervisorctl start cron
+    ) > /proc/1/fd/1 2>&1 &
     disown
 }
 
 # Start valheim-server via supervisord
 start_server() {
-    log "=== Valheim Init Complete ==="
     schedule_server_start
 }
 

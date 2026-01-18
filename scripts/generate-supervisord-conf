@@ -8,9 +8,7 @@ mkdir -p /etc/supervisor
 
 # Build environment string with all needed variables
 build_env_string() {
-    local env_vars="SYSLOG_REMOTE_HOST=\"${SYSLOG_REMOTE_HOST:-}\""
-    env_vars+=",SYSLOG_REMOTE_PORT=\"${SYSLOG_REMOTE_PORT:-514}\""
-    env_vars+=",SERVER_NAME=\"${SERVER_NAME}\""
+    local env_vars="SERVER_NAME=\"${SERVER_NAME}\""
     env_vars+=",SERVER_PORT=\"${SERVER_PORT}\""
     env_vars+=",WORLD_NAME=\"${WORLD_NAME}\""
     env_vars+=",SERVER_PASS=\"${SERVER_PASS}\""
@@ -66,7 +64,7 @@ fi
 # Program: valheim-init
 cat >> "$OUTPUT" << EOF
 [program:valheim-init]
-command=/opt/valheim/scripts/valheim-init
+command=/opt/valheim/scripts/log-tag valheim-init /opt/valheim/scripts/valheim-init
 user=root
 priority=1
 autostart=true
@@ -84,7 +82,7 @@ EOF
 # Program: valheim-server
 cat >> "$OUTPUT" << EOF
 [program:valheim-server]
-command=/bin/bash -c 'exec /opt/valheim/scripts/valheim-server > >(exec /opt/valheim/scripts/container-log-filter) 2>&1'
+command=/opt/valheim/scripts/log-tag valheim-server /opt/valheim/scripts/valheim-server
 user=root
 directory=/opt/valheim/server
 priority=10
@@ -102,13 +100,13 @@ environment=HOME="/root",USER="root",${ENV_VARS}
 
 EOF
 
-# Program: cron
+# Program: cron (started by valheim-init after server is online)
 cat >> "$OUTPUT" << 'EOF'
 [program:cron]
-command=/usr/sbin/cron -f
+command=/opt/valheim/scripts/log-tag cron /usr/sbin/cron -f
 user=root
 priority=10
-autostart=true
+autostart=false
 autorestart=true
 startsecs=1
 stopwaitsecs=5
@@ -123,7 +121,7 @@ EOF
 # Program: valheim-updater
 cat >> "$OUTPUT" << EOF
 [program:valheim-updater]
-command=/opt/valheim/scripts/valheim-updater
+command=/opt/valheim/scripts/log-tag valheim-updater /opt/valheim/scripts/valheim-updater
 user=root
 priority=20
 autostart=false
@@ -141,7 +139,7 @@ EOF
 # Program: valheim-updater-bepinex
 cat >> "$OUTPUT" << EOF
 [program:valheim-updater-bepinex]
-command=/opt/valheim/scripts/valheim-bepinex-updater
+command=/opt/valheim/scripts/log-tag bepinex-updater /opt/valheim/scripts/valheim-bepinex-updater
 user=root
 priority=21
 autostart=false

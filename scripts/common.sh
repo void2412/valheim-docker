@@ -8,72 +8,6 @@ export STEAMCMD="/opt/steamcmd/steamcmd.sh"
 export VALHEIM_APP_ID=896660
 export VALHEIM_PID_FILE="/var/run/valheim.pid"
 
-# Script name for logging - each script should set this before sourcing or after
-# Default to the calling script's basename
-SCRIPT_NAME="${SCRIPT_NAME:-$(basename "${BASH_SOURCE[1]:-${0}}" 2>/dev/null || echo 'valheim')}"
-
-# Logging functions with script identification and syslog forwarding
-log() {
-    local tag="valheim-${SCRIPT_NAME}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $*"
-    if [[ -S /dev/log ]]; then
-        /usr/local/bin/logger -t "$tag" -p local0.info "$*" 2>/dev/null || true
-    fi
-}
-
-log_error() {
-    local tag="valheim-${SCRIPT_NAME}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] ERROR: $*" >&2
-    if [[ -S /dev/log ]]; then
-        /usr/local/bin/logger -t "$tag" -p local0.err "$*" 2>/dev/null || true
-    fi
-}
-
-log_warn() {
-    local tag="valheim-${SCRIPT_NAME}"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] WARN: $*"
-    if [[ -S /dev/log ]]; then
-        /usr/local/bin/logger -t "$tag" -p local0.warning "$*" 2>/dev/null || true
-    fi
-}
-
-# Process game server output - detects log levels, formats output, forwards to syslog
-# Doorstop warning filtering is handled by valheim-log-filter at supervisord level
-# Usage: some_command | log_game_output
-log_game_output() {
-    local tag="valheim-game"
-    while IFS= read -r line; do
-        # Skip empty lines
-        [[ -z "$line" ]] && continue
-
-        # Detect log level
-        local level="info"
-        local stderr=0
-
-        # Unity/Valheim/BepInEx error patterns
-        if [[ "$line" =~ ERROR:|Error:|\[Error|\[Fatal|\[error\]|Exception:|NullReference ]]; then
-            level="err"
-            stderr=1
-        elif [[ "$line" =~ WARNING:|Warning:|\[Warning|\[warn\]|\[Warn ]]; then
-            level="warning"
-        elif [[ "$line" =~ \[Debug ]]; then
-            level="debug"
-        fi
-
-        # Output to stdout/stderr
-        if [[ $stderr -eq 1 ]]; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $line" >&2
-        else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] [$tag] $line"
-        fi
-
-        # Forward to syslog
-        if [[ -S /dev/log ]]; then
-            /usr/local/bin/logger -t "$tag" -p "local0.$level" "$line" 2>/dev/null || true
-        fi
-    done
-}
-
 # Get server PID
 get_server_pid() {
     pgrep -f "valheim_server.x86_64" 2>/dev/null || echo ""
@@ -87,14 +21,10 @@ is_server_running() {
 }
 
 # Get player count by parsing server log
-# Returns 0 if unable to determine
 get_player_count() {
     local log_file="$CONFIG_DIR/server.log"
     local count=0
 
-    # Try to count connected players from log
-    # Valheim logs "Got connection SteamID" for connects
-    # and "Closing socket" or "Peer disconnect" for disconnects
     if [[ -f "$log_file" ]]; then
         local connects disconnects
         connects=$(grep -c "Got connection SteamID" "$log_file" 2>/dev/null || echo 0)
@@ -128,39 +58,75 @@ is_server_idle() {
 
     if [[ "$player_count" -gt 0 ]]; then
         update_activity_timestamp
-        return 1  # Not idle - players connected
+        return 1
     fi
 
-    # Check grace period
     local last_activity now elapsed
     last_activity=$(get_last_activity_timestamp)
     now=$(date +%s)
     elapsed=$((now - last_activity))
 
     if [[ "$last_activity" -eq 0 ]] || [[ $elapsed -ge $grace_period ]]; then
-        return 0  # Idle
+        return 0
     fi
 
-    return 1  # Within grace period
+    return 1
 }
 
-# Wait for server to be ready
+# Wait for server process to start
 wait_for_server_ready() {
     local timeout="${1:-120}"
     local elapsed=0
 
-    log "Waiting for server to be ready (timeout: ${timeout}s)..."
-
     while [[ $elapsed -lt $timeout ]]; do
         if is_server_running; then
-            log "Server process detected after ${elapsed}s"
             return 0
         fi
         sleep 5
         ((elapsed += 5))
     done
 
-    log_error "Server failed to start within ${timeout}s"
+    return 1
+}
+
+# Check if server is listening on game port
+server_is_listening() {
+    local server_port="${SERVER_PORT:-2456}"
+
+    awk -v server_port="$server_port" '
+        BEGIN { exit_code = 1 }
+        {
+            if ($1 ~ /^[0-9]/) {
+                split($2, local_bind, ":")
+                listening_port = sprintf("%d", "0x" local_bind[2])
+                if (listening_port == server_port) {
+                    exit_code = 0
+                    exit
+                }
+            }
+        }
+        END { exit exit_code }
+    ' /proc/net/udp* 2>/dev/null
+}
+
+# Wait for server to be online (listening on game port)
+wait_for_server_online() {
+    local timeout="${1:-300}"
+    local server_port="${SERVER_PORT:-2456}"
+    local elapsed=0
+
+    echo "[valheim-init] Waiting for server to listen on port $server_port..."
+
+    while [[ $elapsed -lt $timeout ]]; do
+        if server_is_listening; then
+            echo "[valheim-init] Server is online"
+            return 0
+        fi
+        sleep 5
+        ((elapsed += 5))
+    done
+
+    echo "[valheim-init] Timeout waiting for server to come online"
     return 1
 }
 
@@ -171,24 +137,20 @@ stop_server() {
     pid=$(get_server_pid)
 
     if [[ -z "$pid" ]]; then
-        log "Server not running"
         return 0
     fi
 
-    log "Sending SIGTERM to server (PID: $pid)..."
     kill -TERM "$pid" 2>/dev/null
 
     local elapsed=0
     while [[ $elapsed -lt $timeout ]]; do
         if ! is_server_running; then
-            log "Server stopped gracefully after ${elapsed}s"
             return 0
         fi
         sleep 2
         ((elapsed += 2))
     done
 
-    log_warn "Server did not stop gracefully, sending SIGKILL..."
     kill -KILL "$pid" 2>/dev/null
     return 1
 }

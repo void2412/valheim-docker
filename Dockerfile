@@ -33,10 +33,8 @@ RUN mkdir -p /opt/valheim/server /opt/valheim/scripts \
     /saves /backups \
     /var/log/supervisor /var/spool/cron/crontabs
 
-# Setup BusyBox symlinks for crond, syslogd, and logger
-RUN ln -sf /bin/busybox /usr/local/bin/crond \
-    && ln -sf /bin/busybox /usr/local/bin/syslogd \
-    && ln -sf /bin/busybox /usr/local/bin/logger
+# Setup BusyBox symlink for crond
+RUN ln -sf /bin/busybox /usr/local/bin/crond
 
 # Locale setup
 RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
@@ -71,10 +69,7 @@ ENV SERVER_NAME="Valheim Server" \
     SUPERVISOR_HTTP=false \
     SUPERVISOR_HTTP_PORT=9001 \
     SUPERVISOR_HTTP_USER=admin \
-    SUPERVISOR_HTTP_PASS="changeme" \
-    SYSLOG_REMOTE_HOST="" \
-    SYSLOG_REMOTE_PORT=514 \
-    SYSLOG_REMOTE_AND_LOCAL=true
+    SUPERVISOR_HTTP_PASS="changeme"
 
 # Expose ports
 EXPOSE 2456/udp 2457/udp 9001/tcp 2457/tcp

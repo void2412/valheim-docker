@@ -8,7 +8,6 @@ Dockerized Valheim dedicated server with BepInEx mod support, automated backups,
 - **BepInEx** mod framework support
 - **Automated backups** with rotation
 - **Scheduled restarts** with idle detection
-- **Remote syslog** support via BusyBox
 - **Supervisor HTTP** web interface
 - **Graceful shutdown** for world save protection
 

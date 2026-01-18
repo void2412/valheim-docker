@@ -47,11 +47,6 @@ services:
       - SUPERVISOR_HTTP_USER=admin
       - SUPERVISOR_HTTP_PASS=changeme
 
-      # Remote syslog (optional)
-      - SYSLOG_REMOTE_HOST=
-      - SYSLOG_REMOTE_PORT=514
-      - SYSLOG_REMOTE_AND_LOCAL=true
-
     volumes:
       # Server files + BepInEx (persists across container rebuilds)
       - ./server:/opt/valheim/server

@@ -1,0 +1,14 @@
+#!/bin/bash
+# Log tagger - prefixes all output with a tag
+# Usage: log-tag <tag> <command> [args...]
+# Uses process substitution to preserve exec/signal behavior
+
+TAG="$1"
+shift
+
+# Redirect stdout/stderr through sed with tag prefix
+# -u flag for unbuffered output
+exec > >(exec sed -u "s/^/[$TAG] /") 2>&1
+
+# Execute the actual command (replaces this shell, preserves signal handling)
+exec "$@"
